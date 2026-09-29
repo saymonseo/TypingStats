@@ -65,11 +65,12 @@ internal sealed class TrayHost : ApplicationContext
     {
         this.collector = collector; this.smoke = smoke; this.benchmark = benchmark; form = new MainForm(collector); MainForm = form;
         var menu = new ContextMenuStrip();
+        Theme.Menu(menu);
         menu.Items.Add("Открыть статистику", null, (_, _) => Show());
         menu.Items.Add("Пауза / продолжить", null, async (_, _) => await Safe(collector.TogglePause()));
         menu.Items.Add("Сохранить сейчас", null, async (_, _) => await Safe(collector.SaveNow()));
         menu.Items.Add("Выход", null, (_, _) => Exit());
-        tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "TypingStats — учёт работает", ContextMenuStrip = menu, Visible = true };
+        tray = new NotifyIcon { Icon = AppIcons.Running, Text = "TypingStats — учёт работает", ContextMenuStrip = menu, Visible = true };
         tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Show(); };
         form.ExitRequested += Exit;
         hotkey = new HotkeyWindow(Show, () => _ = Safe(collector.TogglePause()), collector.Settings.HotkeyVk);
@@ -96,8 +97,9 @@ internal sealed class TrayHost : ApplicationContext
             hotkey.Configure(collector.Settings.HotkeyVk);
             if (!hotkey.Registered) tray.ShowBalloonTip(3000, "TypingStats", "Выбранная горячая клавиша занята. Используйте трей.", ToolTipIcon.Info);
         }
-        tray.Icon = collector.StorageError != null ? SystemIcons.Warning : collector.Paused ? SystemIcons.Information : SystemIcons.Application;
-        tray.Text = collector.Paused ? "TypingStats — пауза" : collector.StorageError != null ? "TypingStats — не сохранено" : "TypingStats — учёт работает";
+        var statusIcon = collector.StorageError != null ? AppIcons.Error : collector.Paused ? AppIcons.Paused : AppIcons.Running;
+        if (!ReferenceEquals(tray.Icon, statusIcon)) tray.Icon = statusIcon;
+        tray.Text = collector.StorageError != null ? "TypingStats — не сохранено" : collector.Paused ? "TypingStats — пауза" : "TypingStats — учёт работает";
         if (smoke && ticks == (benchmark ? 35 : 3))
         {
             try
@@ -118,7 +120,9 @@ internal sealed class TrayHost : ApplicationContext
                 bitmap.Save(Path.Combine(collector.Settings.DataDirectory, "smoke-ui.png"));
                 form.RenderVerificationTabs(collector.Settings.DataDirectory);
                 File.WriteAllText(Path.Combine(collector.Settings.DataDirectory, "smoke-report.json"), JsonSerializer.Serialize(new
-                { UiRendered = true, Collector = collector.Status, Uia = collector.UiaStatus, Hotkey = hotkey.Registered, Database = collector.Store.Path }, new JsonSerializerOptions { WriteIndented = true }));
+                { UiRendered = true, Collector = collector.Status, Uia = collector.UiaStatus, Hotkey = hotkey.Registered, Database = collector.Store.Path,
+                    CustomTrayIcon = ReferenceEquals(tray.Icon, AppIcons.Running) || ReferenceEquals(tray.Icon, AppIcons.Paused) || ReferenceEquals(tray.Icon, AppIcons.Error),
+                    TrayIconWidth = tray.Icon!.Width, EmbeddedStateIcons = 3 }, new JsonSerializerOptions { WriteIndented = true }));
             }
             catch (Exception error) { File.WriteAllText(Path.Combine(collector.Settings.DataDirectory, "smoke-error.txt"), error.ToString()); Environment.ExitCode = 1; }
             Exit(); return;

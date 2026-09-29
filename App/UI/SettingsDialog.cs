@@ -5,31 +5,41 @@ internal sealed class SettingsDialog : Form
     private readonly Settings settings;
     public SettingsDialog(Settings settings)
     {
-        this.settings = settings; Text = "Настройки TypingStats"; ClientSize = new Size(590, 490);
+        this.settings = settings; Icon = AppIcons.Application; Text = "Настройки TypingStats"; Theme.Window(this);
+        ClientSize = new Size(Theme.P(610), Math.Min(Theme.P(630), Screen.PrimaryScreen!.WorkingArea.Height - Theme.P(90)));
         StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false; MinimizeBox = false; Font = new Font("Segoe UI", 10);
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 2, RowCount = 9 };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30)); Controls.Add(panel);
-        NumericUpDown AddNumber(string label, int value, int min, int max, int row)
+        MaximizeBox = false; MinimizeBox = false;
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(Theme.P(22)), RowCount = 3, ColumnCount = 1 };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.P(76))); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.P(58))); Controls.Add(root);
+        var header = new Panel { Dock = DockStyle.Fill };
+        var heading = Theme.Label("Настройте свой ритм", 24, bold: true); heading.Dock = DockStyle.Top; heading.Height = Theme.P(40); heading.Font = Theme.Font(24, true, true);
+        var intro = Theme.Label("Запуск, учёт активности и хранение истории", 12, Theme.Muted); intro.Dock = DockStyle.Bottom; intro.Height = Theme.P(26); header.Controls.AddRange([heading, intro]); root.Controls.Add(header, 0, 0);
+        var card = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, Theme.P(10)) }; root.Controls.Add(card, 0, 1);
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, ColumnCount = 2, RowCount = 8, BackColor = Theme.Card };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 72)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 28));
+        for (var i = 0; i < 8; i++) panel.RowStyles.Add(new RowStyle(SizeType.Absolute, Theme.P(46))); card.Controls.Add(panel);
+        NumericUpDown AddNumber(string text, int value, int min, int max, int row)
         {
-            panel.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 8, 0, 0) }, 0, row);
-            var n = new NumericUpDown { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), Width = 100 }; panel.Controls.Add(n, 1, row); return n;
+            var label = Theme.Label(text); label.Dock = DockStyle.Fill; panel.Controls.Add(label, 0, row);
+            var n = new NumericUpDown { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), Width = Theme.P(104), Font = Theme.Font(), BorderStyle = BorderStyle.FixedSingle, BackColor = Theme.Page, ForeColor = Theme.Ink, Anchor = AnchorStyles.Right };
+            panel.Controls.Add(n, 1, row); return n;
         }
         var idle = AddNumber("Интервал активности, секунд", settings.IdleSeconds, 1, 30, 0);
         var gap = AddNumber("Перерыв между сессиями, секунд", settings.SessionSeconds, 30, 600, 1);
-        var retention = AddNumber("Хранить минутные данные, дней", settings.MinuteDays, 1, 36500, 2);
+        var retention = AddNumber("Минутная история, дней", settings.MinuteDays, 1, 36500, 2);
         var goal = AddNumber("Дневная цель (0 — выключена)", settings.DailyGoal, 0, 1000000, 3);
-        var auto = new CheckBox { Text = "Запускать вместе с Windows", Checked = Settings.AutoStartEnabled(), AutoSize = true };
-        panel.Controls.Add(auto, 0, 4); panel.SetColumnSpan(auto, 2);
-        var minimized = new CheckBox { Text = "Открывать сразу в трее", Checked = settings.StartMinimized, AutoSize = true };
-        panel.Controls.Add(minimized, 0, 5); panel.SetColumnSpan(minimized, 2);
-        var composition = new CheckBox { Text = "Результаты IME через UI Automation", Checked = settings.EnableCompositionResults, AutoSize = true };
-        panel.Controls.Add(composition, 0, 6); panel.SetColumnSpan(composition, 2);
-        panel.Controls.Add(new Label { Text = "Пауза: Ctrl+Alt + выбранная клавиша", AutoSize = true }, 0, 7);
-        var key = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
+        ToggleSwitch AddToggle(string label, bool value, int row)
+        { var toggle = new ToggleSwitch { Text = label, Checked = value, Dock = DockStyle.Fill }; panel.Controls.Add(toggle, 0, row); panel.SetColumnSpan(toggle, 2); return toggle; }
+        var auto = AddToggle("Запускать вместе с Windows", Settings.AutoStartEnabled(), 4);
+        var minimized = AddToggle("Открывать сразу в трее", settings.StartMinimized, 5);
+        var composition = AddToggle("Результаты IME через UI Automation", settings.EnableCompositionResults, 6);
+        var shortcut = Theme.Label("Пауза: Ctrl + Alt + выбранная клавиша"); shortcut.Dock = DockStyle.Fill; panel.Controls.Add(shortcut, 0, 7);
+        var key = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = Theme.P(104), Font = Theme.Font(), Anchor = AnchorStyles.Right };
         key.Items.AddRange(Enumerable.Range(1, 12).Select(i => (object)("F" + i)).ToArray()); key.SelectedIndex = settings.HotkeyVk - 0x70; panel.Controls.Add(key, 1, 7);
-        var save = new Button { Text = "Сохранить", AutoSize = true, Anchor = AnchorStyles.Right };
-        panel.Controls.Add(save, 1, 8); AcceptButton = save;
+        var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, Theme.P(10), 0, 0) };
+        var save = new ModernButton { Text = "Сохранить", Primary = true, Width = Theme.P(142) };
+        var cancel = new ModernButton { Text = "Отмена", DialogResult = DialogResult.Cancel, Width = Theme.P(100) };
+        footer.Controls.AddRange([save, cancel]); root.Controls.Add(footer, 0, 2); AcceptButton = save; CancelButton = cancel;
         save.Click += (_, _) =>
         {
             try

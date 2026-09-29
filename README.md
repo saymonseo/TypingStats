@@ -1,4 +1,4 @@
-# TypingStats 0.1.0
+# TypingStats 0.1.1
 
 Персональный счётчик клавиатурного ввода для Windows. Это рабочая первая версия с ограничениями точности, а не завершённая универсальная реализация всех сценариев исходного ТЗ.
 
@@ -7,6 +7,8 @@
 Готовые сборки: https://github.com/saymonseo/TypingStats/releases
 
 Полное проектное ТЗ: [docs/spec.md](docs/spec.md). Фактические ограничения и проверки: [docs/compatibility-report.md](docs/compatibility-report.md) и [docs/verification-report.md](docs/verification-report.md).
+
+Версия 0.1.1 обновляет интерфейс: боковая навигация, современные карточки, таблицы и переключатели настроек. У программы теперь собственная иконка в трее, окнах и executable; жёлтый значок обозначает паузу, красный — ошибку сохранения. Данные и правила подсчёта остаются совместимыми с 0.1.0.
 
 ## Запуск
 
@@ -81,6 +83,8 @@ dotnet run --project Tests/TypingStats.Tests.csproj -c Release
 Тесты — отдельный console runner, exit code 0 означает успешное прохождение. Он проверяет независимо заданные Unicode-примеры, разные границы фрагментов, удаления, периоды, активное время и SQLite backup/restore/idempotence.
 
 Поставка собирается командой `./build.ps1`. Скрипт не запускает установку или автозапуск.
+
+Иконки уже находятся в `App/Assets`. Чтобы воспроизвести их из геометрического рисунка: `dotnet run --project Tools/IconBuilder/IconBuilder.csproj -- App/Assets`.
 
 ## Контрольное поле и диагностика
 

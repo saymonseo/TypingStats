@@ -7,34 +7,45 @@ internal sealed class HistoryChart : Control
 {
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public IReadOnlyList<(string Label, long Gross, long Net)> Values { get; set; } = [];
-    public HistoryChart() { DoubleBuffered = true; BackColor = Color.White; Font = new Font("Segoe UI", 9); }
+    public HistoryChart() { DoubleBuffered = true; BackColor = Theme.Card; Font = Theme.Font(11); }
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e); var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var ink = new SolidBrush(Color.FromArgb(95, 110, 125));
-        if (Values.Count == 0) { g.DrawString("Пока нет данных за этот период", Font, ink, 20, 20); return; }
-        var width = Math.Max(1, Width - 90); var height = Math.Max(1, Height - 95);
-        var max = Math.Max(1, Values.Max(x => x.Gross));
-        using var grid = new Pen(Color.FromArgb(231, 236, 241));
+        using var ink = new SolidBrush(Theme.Muted);
+        if (Values.Count == 0 || Values.All(v => v.Gross == 0 && v.Net == 0))
+        {
+            var cx = Width / 2f; var cy = Height / 2f - Theme.P(30);
+            using var blue = new SolidBrush(Theme.BlueSoft);
+            for (var i = 0; i < 3; i++) { var h = Theme.P(20 + i * 14); using var p = Theme.Round(new RectangleF(cx - Theme.P(29) + i * Theme.P(22), cy - h, Theme.P(16), h), Theme.P(4)); g.FillPath(blue, p); }
+            using var heading = Theme.Font(16, true); using var format = new StringFormat { Alignment = StringAlignment.Center };
+            g.DrawString("Пока нет набора текста", heading, ink, new RectangleF(0, cy + Theme.P(18), Width, Theme.P(30)), format);
+            g.DrawString("Начните печатать — здесь появится ваша активность", Font, ink, new RectangleF(0, cy + Theme.P(52), Width, Theme.P(25)), format); return;
+        }
+        var left = Theme.P(52); var top = Theme.P(18); var width = Math.Max(1, Width - left - Theme.P(12)); var height = Math.Max(1, Height - Theme.P(83));
+        var max = Math.Max(1L, Values.Max(v => v.Gross)); var min = Math.Min(0L, Values.Min(v => v.Net));
+        float Y(long value) => top + height * (max - value) / (float)(max - min);
+        var baseline = Y(0);
+        using var grid = new Pen(Theme.Line);
         for (var i = 0; i <= 4; i++)
         {
-            var y = 20 + height * i / 4f; g.DrawLine(grid, 60, y, Width - 15, y);
-            g.DrawString((max * (4 - i) / 4).ToString("N0"), Font, ink, 4, y - 7);
+            var value = max - (max - min) * i / 4; var y = top + height * i / 4f;
+            g.DrawLine(grid, left, y, Width - Theme.P(10), y); g.DrawString(value.ToString("N0"), Font, ink, 0, y - Theme.P(7));
         }
         var step = width / (float)Values.Count;
-        using var grossBrush = new SolidBrush(Color.FromArgb(46, 111, 168));
-        using var netBrush = new SolidBrush(Color.FromArgb(107, 173, 171));
-        var every = Math.Max(1, Values.Count / 12);
+        using var grossBrush = new SolidBrush(Theme.Blue); using var netBrush = new SolidBrush(Theme.Green); using var negativeBrush = new SolidBrush(Color.FromArgb(211, 146, 55));
+        var every = Math.Max(1, (int)Math.Ceiling(Values.Count / 12.0));
         for (var i = 0; i < Values.Count; i++)
         {
-            var h = height * Values[i].Gross / (float)max;
-            var x = 60 + i * step;
-            g.FillRectangle(grossBrush, x + 2, 20 + height - h, Math.Max(2, step * .62f), h);
-            var nh = height * Math.Max(0, Values[i].Net) / (float)max;
-            g.FillRectangle(netBrush, x + step * .65f, 20 + height - nh, Math.Max(2, step * .25f), nh);
-            if (i % every == 0) g.DrawString(Values[i].Label, Font, ink, x, 25 + height);
+            var x = left + i * step; var w = Math.Max(1, step * .5f);
+            var gy = Y(Values[i].Gross); var gh = baseline - gy;
+            if (gh > .5f) { using var p = Theme.Round(new RectangleF(x + 2, gy, w, gh), Theme.P(3)); g.FillPath(grossBrush, p); }
+            var ny = Y(Values[i].Net); var nh = Math.Abs(baseline - ny);
+            if (nh > .5f) { using var p = Theme.Round(new RectangleF(x + step * .56f, Math.Min(ny, baseline), Math.Max(1, step * .22f), nh), Theme.P(2)); g.FillPath(Values[i].Net >= 0 ? netBrush : negativeBrush, p); }
+            if (i % every == 0) g.DrawString(Values[i].Label, Font, ink, x, top + height + Theme.P(12));
         }
-        g.DrawString("Синий — напечатано   •   бирюзовый — после исправлений ≈", Font, ink, 60, Height - 27);
+        var legendY = Height - Theme.P(20);
+        g.FillEllipse(grossBrush, left, legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString("Напечатано", Font, ink, left + Theme.P(14), legendY);
+        g.FillEllipse(netBrush, left + Theme.P(122), legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString("После правок ≈", Font, ink, left + Theme.P(136), legendY);
     }
 }
 
@@ -42,28 +53,32 @@ internal sealed class Heatmap : Control
 {
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public IReadOnlyList<MetricRow> Rows { get; set; } = [];
-    public Heatmap() { DoubleBuffered = true; BackColor = Color.White; Font = new Font("Segoe UI", 9); }
+    public Heatmap() { DoubleBuffered = true; BackColor = Theme.Card; Font = Theme.Font(11); }
     protected override void OnPaint(PaintEventArgs e)
     {
-        base.OnPaint(e); var totals = new long[7, 24];
+        base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; var totals = new long[7, 24];
         foreach (var r in Rows)
         {
             if (r.Key.Hour < 0 || !DateTime.TryParse(r.Key.LocalDate, out var d)) continue;
-            var day = ((int)d.DayOfWeek + 6) % 7; totals[day, r.Key.Hour] += r.Counts.Gross;
+            totals[((int)d.DayOfWeek + 6) % 7, r.Key.Hour] += r.Counts.Gross;
         }
-        var max = Math.Max(1, totals.Cast<long>().Max()); var cell = Math.Max(9, (Width - 80) / 24);
-        var ch = Math.Max(18, Math.Min(35, (Height - 50) / 7)); var names = new[] { "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс" };
-        using var ink = new SolidBrush(Color.FromArgb(90, 105, 120));
-        for (var hour = 0; hour < 24; hour += 2) e.Graphics.DrawString(hour.ToString("00"), Font, ink, 45 + hour * cell, 4);
+        var max = Math.Max(1, totals.Cast<long>().Max()); var left = Theme.P(40); var top = Theme.P(36);
+        var cell = Math.Max(4, (Width - left - Theme.P(12)) / 24f); var ch = Math.Max(Theme.P(18), Math.Min(Theme.P(40), (Height - Theme.P(70)) / 7f));
+        var names = new[] { "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс" };
+        using var ink = new SolidBrush(Theme.Muted);
+        for (var hour = 0; hour < 24; hour += 3) e.Graphics.DrawString(hour.ToString("00"), Font, ink, left + hour * cell, Theme.P(10));
         for (var day = 0; day < 7; day++)
         {
-            e.Graphics.DrawString(names[day], Font, ink, 9, 28 + day * ch);
+            e.Graphics.DrawString(names[day], Font, ink, 0, top + day * ch + Theme.P(5));
             for (var hour = 0; hour < 24; hour++)
             {
                 var v = Math.Sqrt(totals[day, hour] / (double)max);
-                using var brush = new SolidBrush(Color.FromArgb((int)(236 - v * 190), (int)(243 - v * 132), (int)(247 - v * 80)));
-                e.Graphics.FillRectangle(brush, 45 + hour * cell, 25 + day * ch, cell - 3, ch - 3);
+                using var brush = new SolidBrush(Color.FromArgb((int)(237 - v * 194), (int)(242 - v * 138), (int)(249 - v * 33)));
+                using var p = Theme.Round(new RectangleF(left + hour * cell, top + day * ch, Math.Max(1, cell - Theme.P(3)), ch - Theme.P(4)), Theme.P(3)); e.Graphics.FillPath(brush, p);
             }
         }
+        e.Graphics.DrawString("Меньше", Font, ink, left, top + 7 * ch + Theme.P(12));
+        for (var i = 0; i < 5; i++) { using var b = new SolidBrush(Color.FromArgb(237 - i * 48, 242 - i * 34, 249 - i * 8)); e.Graphics.FillRectangle(b, left + Theme.P(65 + i * 16), top + 7 * ch + Theme.P(14), Theme.P(12), Theme.P(12)); }
+        e.Graphics.DrawString("Больше", Font, ink, left + Theme.P(155), top + 7 * ch + Theme.P(12));
     }
 }

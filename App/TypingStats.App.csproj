@@ -4,10 +4,12 @@
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>TypingStats</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
+    <ApplicationIcon>Assets\typingstats.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Assets\*.ico" LogicalName="TypingStats.Assets.%(Filename)%(Extension)" />
     <ProjectReference Include="../Core/TypingStats.Core.csproj" />
     <ProjectReference Include="../Storage/TypingStats.Storage.csproj" />
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
