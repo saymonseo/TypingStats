@@ -5,6 +5,10 @@ public sealed class TypingEngine
 {
     private readonly Dictionary<BucketKey, Counters> pending = new();
     private readonly List<TypingSession> closedSessions = new();
+    private readonly Dictionary<(BucketKey Bucket, string Code), KeyMetricRow> keyCounts = new();
+    private DateTimeOffset? keyCursor;
+    private long keyCursorMono, keyEndMono, lastKeyMono, sessionKeyPresses, sessionKeyActive;
+    private InputContext keyContext;
     private readonly GraphemeStream stream = new();
     private InputContext? context;
     private long remaining;
@@ -35,7 +39,7 @@ public sealed class TypingEngine
     {
         if (context != ctx)
         {
-            Advance(utc, mono); activeEndMono = mono; activeCursor = null;
+            Advance(utc, mono); activeEndMono = mono; activeCursor = null; keyCursor = null;
             BreakSeries(); context = ctx;
         }
     }
@@ -44,11 +48,25 @@ public sealed class TypingEngine
         SetContext(ctx, utc, mono); var c = At(ctx, utc);
         if (injected) c.Injected++; else if (repeat) c.Repeats++; else c.PrimaryKeys++;
     }
+    public void KeyPress(InputContext ctx, DateTimeOffset utc, long mono, string code, string label, bool repeat = false, bool injected = false)
+    {
+        SetContext(ctx, utc, mono); Advance(utc, mono);
+        var c = At(ctx, utc); c.KeyPresses++;
+        var local = utc.ToLocalTime();
+        var bucket = new BucketKey(utc.ToUnixTimeSeconds() / 60 * 60, local.ToString("yyyy-MM-dd"), local.Hour, (int)local.Offset.TotalMinutes, TimeZoneInfo.Local.Id, ctx.App, ctx.Profile);
+        var id = (bucket, code);
+        if (keyCounts.TryGetValue(id, out var previous)) keyCounts[id] = previous with { Presses = previous.Presses + 1, Repeats = previous.Repeats + (repeat ? 1 : 0), Injected = previous.Injected + (injected ? 1 : 0) };
+        else keyCounts[id] = new KeyMetricRow(bucket, code, label, 1, repeat ? 1 : 0, injected ? 1 : 0);
+        StartSession(utc); sessionKeyPresses++; sessionEnd = utc; lastKeyMono = mono;
+        keyContext = ctx; keyCursor = utc; keyCursorMono = mono; keyEndMono = mono + IdleSeconds * 1000L;
+    }
+    private void StartSession(DateTimeOffset utc)
+    { if (sessionId == null) { sessionId = Guid.NewGuid().ToString("N"); sessionStart = utc; } }
     public void Text(InputContext ctx, DateTimeOffset utc, long mono, ReadOnlySpan<char> fragment, bool observed)
     {
         SetContext(ctx, utc, mono); Advance(utc, mono);
         if (lastTextMono != 0 && mono - lastTextMono > SessionSeconds * 1000L)
-        { CloseSession("idle"); BreakSeries(); }
+        { BreakSeries(); }
         var parsed = stream.Append(fragment); var c = At(ctx, utc);
         if (parsed.Overflow) { c.Unresolved++; BreakSeries(); }
         AddCount(ctx, utc, mono, parsed.Delta, parsed.White, observed);
@@ -66,8 +84,7 @@ public sealed class TypingEngine
         var c = At(ctx, utc);
         if (observed) c.Observed += count; else c.Estimated += count;
         c.Whitespace += white; remaining += count;
-        sessionId ??= Guid.NewGuid().ToString("N");
-        if (sessionGross == 0) sessionStart = utc;
+        StartSession(utc);
         sessionGross += count; sessionEnd = utc;
         lastTextMono = mono; lastTextUtc = utc;
         activeContext = ctx; activeCursor = utc; activeCursorMono = mono;
@@ -107,6 +124,18 @@ public sealed class TypingEngine
     public void BreakSeries() { remaining = 0; stream.Reset(); }
     public void Advance(DateTimeOffset utc, long mono)
     {
+        if (keyCursor is { } keyTime)
+        {
+            var elapsed = Math.Max(0, Math.Min(mono, keyEndMono) - keyCursorMono);
+            while (elapsed > 0)
+            {
+                var boundary = DateTimeOffset.FromUnixTimeSeconds(keyTime.ToUnixTimeSeconds() / 60 * 60 + 60);
+                var part = Math.Min(elapsed, Math.Max(1, (long)(boundary - keyTime).TotalMilliseconds));
+                At(keyContext, keyTime).KeyActiveMs += part; sessionKeyActive += part;
+                keyTime = keyTime.AddMilliseconds(part); keyCursorMono += part; elapsed -= part;
+            }
+            keyCursor = mono >= keyEndMono ? null : keyTime;
+        }
         if (activeCursor is { } cursor)
         {
             var elapsed = Math.Max(0, Math.Min(mono, activeEndMono) - activeCursorMono);
@@ -121,25 +150,26 @@ public sealed class TypingEngine
             activeCursor = cursor;
             if (mono >= activeEndMono) activeCursor = null;
         }
-        if (sessionId != null && mono - lastTextMono > SessionSeconds * 1000L)
+        if (sessionId != null && mono - Math.Max(lastTextMono, lastKeyMono) > SessionSeconds * 1000L)
         { CloseSession("idle"); BreakSeries(); }
     }
     public void Stop(DateTimeOffset utc, long mono, string reason)
     {
-        Advance(utc, mono); activeCursor = null; CloseSession(reason); BreakSeries(); context = null;
+        Advance(utc, mono); activeCursor = null; keyCursor = null; CloseSession(reason); BreakSeries(); context = null;
     }
     public void EndContext(DateTimeOffset utc, long mono)
-    { Advance(utc, mono); activeCursor = null; BreakSeries(); context = null; }
+    { Advance(utc, mono); activeCursor = null; keyCursor = null; BreakSeries(); context = null; }
     private void CloseSession(string reason)
     {
         if (sessionId != null)
-            closedSessions.Add(new TypingSession(sessionId, sessionStart, sessionEnd, sessionGross, sessionActive, reason));
-        sessionId = null; sessionGross = 0; sessionActive = 0;
+            closedSessions.Add(new TypingSession(sessionId, sessionStart, sessionEnd, sessionGross, sessionActive, reason, sessionKeyPresses, sessionKeyActive));
+        sessionId = null; sessionGross = 0; sessionActive = 0; sessionKeyPresses = 0; sessionKeyActive = 0;
     }
     public IReadOnlyList<MetricRow> Peek() => pending.Select(x => new MetricRow(x.Key, x.Value.Copy())).ToArray();
+    public IReadOnlyList<KeyMetricRow> PeekKeys() => keyCounts.Values.ToArray();
     public FlushBatch Drain()
     {
-        var batch = new FlushBatch(Guid.NewGuid().ToString("N"), Peek(), closedSessions.ToArray());
-        pending.Clear(); closedSessions.Clear(); return batch;
+        var batch = new FlushBatch(Guid.NewGuid().ToString("N"), Peek(), closedSessions.ToArray(), PeekKeys());
+        pending.Clear(); closedSessions.Clear(); keyCounts.Clear(); return batch;
     }
 }

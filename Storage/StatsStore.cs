@@ -21,8 +21,14 @@ public sealed class StatsStore : IDisposable
         Exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
         using var check = db.CreateCommand(); check.CommandText = "PRAGMA quick_check";
         if ((string?)check.ExecuteScalar() != "ok") throw new InvalidDataException("Проверка базы не пройдена. Исходный файл сохранён.");
+        InitializeSchema();
+    }
+    private void InitializeSchema()
+    {
         using var version = db.CreateCommand(); version.CommandText = "PRAGMA user_version";
-        if (Convert.ToInt32(version.ExecuteScalar()) > 1) throw new InvalidDataException("База создана более новой версией TypingStats.");
+        var previousVersion = Convert.ToInt32(version.ExecuteScalar());
+        if (previousVersion > 2) throw new InvalidDataException("База создана более новой версией TypingStats.");
+        if (previousVersion == 1) Backup(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "before-schema-2-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + ".sqlite"));
         var columns = string.Join(",", Fields.Select(p => $"{p.Name} INTEGER NOT NULL DEFAULT 0"));
         Exec($"""
             CREATE TABLE IF NOT EXISTS metrics(
@@ -35,14 +41,26 @@ public sealed class StatsStore : IDisposable
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, started TEXT NOT NULL, ended TEXT NOT NULL,
               gross INTEGER NOT NULL, active INTEGER NOT NULL, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS applications(app TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'Прочее');
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS key_counts(local_date TEXT NOT NULL, app TEXT NOT NULL, profile TEXT NOT NULL,
+              keycode TEXT NOT NULL, label TEXT NOT NULL, presses INTEGER NOT NULL, repeats INTEGER NOT NULL, injected INTEGER NOT NULL,
+              PRIMARY KEY(local_date,app,profile,keycode));
             """);
+        EnsureColumn("metrics", "KeyPresses"); EnsureColumn("metrics", "KeyActiveMs");
+        EnsureColumn("sessions", "KeyPresses"); EnsureColumn("sessions", "KeyActiveMs");
+        Exec("PRAGMA user_version=2;");
+    }
+    private void EnsureColumn(string table, string column)
+    {
+        using var c = db.CreateCommand(); c.CommandText = $"PRAGMA table_info({table})";
+        using var r = c.ExecuteReader(); var exists = false;
+        while (r.Read()) if (r.GetString(1) == column) exists = true;
+        r.Close(); if (!exists) Exec($"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0");
     }
     private void Exec(string sql)
     { using var c = db.CreateCommand(); c.CommandText = sql; c.ExecuteNonQuery(); }
     public void Save(FlushBatch batch)
     {
-        if (batch.Rows.Count == 0 && batch.Sessions.Count == 0) return;
+        if (batch.Rows.Count == 0 && batch.Sessions.Count == 0 && (batch.Keys?.Count ?? 0) == 0) return;
         lock (gate)
         {
             using var tx = db.BeginTransaction();
@@ -57,10 +75,19 @@ public sealed class StatsStore : IDisposable
             foreach (var s in batch.Sessions)
             {
                 using var c = db.CreateCommand(); c.Transaction = tx;
-                c.CommandText = "INSERT OR IGNORE INTO sessions VALUES($id,$start,$end,$gross,$active,$reason)";
+                c.CommandText = "INSERT OR IGNORE INTO sessions(id,started,ended,gross,active,reason,KeyPresses,KeyActiveMs) VALUES($id,$start,$end,$gross,$active,$reason,$keys,$keyActive)";
                 c.Parameters.AddWithValue("$id", s.Id); c.Parameters.AddWithValue("$start", s.Start.ToString("O"));
                 c.Parameters.AddWithValue("$end", s.End.ToString("O")); c.Parameters.AddWithValue("$gross", s.Gross);
-                c.Parameters.AddWithValue("$active", s.ActiveMs); c.Parameters.AddWithValue("$reason", s.Reason); c.ExecuteNonQuery();
+                c.Parameters.AddWithValue("$active", s.ActiveMs); c.Parameters.AddWithValue("$reason", s.Reason);
+                c.Parameters.AddWithValue("$keys", s.KeyPresses); c.Parameters.AddWithValue("$keyActive", s.KeyActiveMs); c.ExecuteNonQuery();
+            }
+            foreach (var k in batch.Keys ?? [])
+            {
+                using var c = db.CreateCommand(); c.Transaction = tx;
+                c.CommandText = "INSERT INTO key_counts VALUES($date,$app,$profile,$code,$label,$presses,$repeats,$injected) ON CONFLICT DO UPDATE SET presses=presses+excluded.presses,repeats=repeats+excluded.repeats,injected=injected+excluded.injected";
+                c.Parameters.AddWithValue("$date", k.Key.LocalDate); c.Parameters.AddWithValue("$app", k.Key.App); c.Parameters.AddWithValue("$profile", k.Key.Profile);
+                c.Parameters.AddWithValue("$code", k.Code); c.Parameters.AddWithValue("$label", k.Label); c.Parameters.AddWithValue("$presses", k.Presses);
+                c.Parameters.AddWithValue("$repeats", k.Repeats); c.Parameters.AddWithValue("$injected", k.Injected); c.ExecuteNonQuery();
             }
             tx.Commit();
         }
@@ -104,8 +131,18 @@ public sealed class StatsStore : IDisposable
         {
             using var c = db.CreateCommand(); c.CommandText = "SELECT * FROM sessions ORDER BY started DESC LIMIT $limit";
             c.Parameters.AddWithValue("$limit", limit); using var r = c.ExecuteReader(); var list = new List<TypingSession>();
-            while (r.Read()) list.Add(new TypingSession(r.GetString(0), DateTimeOffset.Parse(r.GetString(1)), DateTimeOffset.Parse(r.GetString(2)), r.GetInt64(3), r.GetInt64(4), r.GetString(5)));
+            while (r.Read()) list.Add(new TypingSession(r.GetString(0), DateTimeOffset.Parse(r.GetString(1)), DateTimeOffset.Parse(r.GetString(2)), r.GetInt64(3), r.GetInt64(4), r.GetString(5), r.GetInt64(6), r.GetInt64(7)));
             return list;
+        }
+    }
+    public IReadOnlyList<KeyMetricRow> ReadKeys(string start, string end)
+    {
+        lock (gate)
+        {
+            using var c = db.CreateCommand(); c.CommandText = "SELECT * FROM key_counts WHERE local_date>=$start AND local_date<=$end ORDER BY presses DESC";
+            c.Parameters.AddWithValue("$start", start); c.Parameters.AddWithValue("$end", end); using var r = c.ExecuteReader(); var rows = new List<KeyMetricRow>();
+            while (r.Read()) rows.Add(new KeyMetricRow(new BucketKey(0, r.GetString(0), -1, 0, "", r.GetString(1), r.GetString(2)), r.GetString(3), r.GetString(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7)));
+            return rows;
         }
     }
     public Dictionary<string, string> Categories()
@@ -154,14 +191,15 @@ public sealed class StatsStore : IDisposable
             from.Open(); using var c = from.CreateCommand(); c.CommandText = "PRAGMA quick_check";
             if ((string?)c.ExecuteScalar() != "ok") throw new InvalidDataException("Копия повреждена.");
             c.CommandText = "PRAGMA user_version";
-            if (Convert.ToInt32(c.ExecuteScalar()) != 1) throw new InvalidDataException("Версия копии не поддерживается.");
+            if (Convert.ToInt32(c.ExecuteScalar()) is not (1 or 2)) throw new InvalidDataException("Версия копии не поддерживается.");
             c.CommandText = "SELECT COUNT(*) FROM metrics"; c.ExecuteScalar();
             from.BackupDatabase(db);
+            InitializeSchema();
         }
     }
     public void Clear()
     {
-        lock (gate) Exec("BEGIN; DELETE FROM metrics; DELETE FROM sessions; DELETE FROM batches; COMMIT;");
+        lock (gate) Exec("BEGIN; DELETE FROM metrics; DELETE FROM sessions; DELETE FROM batches; DELETE FROM key_counts; COMMIT;");
     }
     public static void Export(IEnumerable<MetricRow> rows, string path)
     {
@@ -171,12 +209,19 @@ public sealed class StatsStore : IDisposable
             return "\"" + s.Replace("\"", "\"\"") + "\"";
         }
         using var w = new StreamWriter(path, false, new UTF8Encoding(true));
-        w.WriteLine("local_date,hour,offset_minutes,app,profile,gross_observed,gross_estimated,net_delta_estimate,backspaces,deletes,word_deletes,pastes,active_ms,unresolved,lost,metric_version");
+        w.WriteLine("local_date,hour,offset_minutes,app,profile,gross_observed,gross_estimated,net_delta_estimate,backspaces,deletes,word_deletes,pastes,active_ms,unresolved,lost,metric_version,key_presses,key_active_ms");
         foreach (var row in rows)
         {
             var k = row.Key; var c = row.Counts;
-            w.WriteLine(string.Join(",", k.LocalDate, k.Hour, k.Offset, Cell(k.App), Cell(k.Profile), c.Observed, c.Estimated, c.Net, c.Backspaces, c.Deletes, c.WordDeletes, c.Pastes, c.ActiveMs, c.Unresolved, c.Lost, "1"));
+            w.WriteLine(string.Join(",", k.LocalDate, k.Hour, k.Offset, Cell(k.App), Cell(k.Profile), c.Observed, c.Estimated, c.Net, c.Backspaces, c.Deletes, c.WordDeletes, c.Pastes, c.ActiveMs, c.Unresolved, c.Lost, "2", c.KeyPresses, c.KeyActiveMs));
         }
+    }
+    public static void ExportKeys(IEnumerable<KeyMetricRow> rows, string path)
+    {
+        static string Cell(string s) => "\"" + ((s.Length > 0 && "=+-@".Contains(s[0]) ? "'" : "") + s).Replace("\"", "\"\"") + "\"";
+        using var w = new StreamWriter(path, false, new UTF8Encoding(true)); w.WriteLine("local_date,app,profile,key_code,key_name,presses,repeats,injected");
+        foreach (var g in rows.GroupBy(r => (r.Key.LocalDate, r.Key.App, r.Key.Profile, r.Code)))
+            w.WriteLine(string.Join(",", g.Key.LocalDate, Cell(g.Key.App), Cell(g.Key.Profile), Cell(g.Key.Code), Cell(g.First().Label), g.Sum(x => x.Presses), g.Sum(x => x.Repeats), g.Sum(x => x.Injected)));
     }
     public void Dispose() { lock (gate) db.Dispose(); }
 }

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace TypingStats.App.Windows;
 
-public sealed record KeyboardSample(uint Key, uint Scan, byte[] State, bool Repeat, bool Injected, uint Pid, nint Focus, nint Layout, DateTimeOffset Utc, long Mono);
+public sealed record KeyboardSample(uint Key, uint Scan, byte[] State, bool Repeat, bool Injected, uint Pid, nint Focus, nint Layout, DateTimeOffset Utc, long Mono, bool Extended = false);
 
 internal sealed class KeyboardCapture : IDisposable
 {
@@ -76,7 +76,7 @@ internal sealed class KeyboardCapture : IDisposable
                         var gui = new Native.GuiInfo { Size = (uint)Marshal.SizeOf<Native.GuiInfo>() };
                         Native.GetGUIThreadInfo(tid, ref gui);
                         receive(new KeyboardSample(k.Vk, k.Scan, (byte[])state.Clone(), repeat, injected, pid,
-                            gui.Focus != 0 ? gui.Focus : window, Native.GetKeyboardLayout(tid), DateTimeOffset.UtcNow, Environment.TickCount64));
+                            gui.Focus != 0 ? gui.Focus : window, Native.GetKeyboardLayout(tid), DateTimeOffset.UtcNow, Environment.TickCount64, (k.Flags & 1) != 0));
                     }
                 }
             }

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Win32;
+using TypingStats.Core;
 
 namespace TypingStats.App;
 
@@ -12,6 +13,9 @@ public sealed class Settings
     public bool StartMinimized { get; set; }
     public bool EnableCompositionResults { get; set; } = true;
     public int HotkeyVk { get; set; } = 0x7b;
+    public TrackingMode Mode { get; set; } = TrackingMode.Both;
+    public bool CountRepeats { get; set; } = true;
+    public bool CountInjected { get; set; }
     public string DataDirectory { get; }
     private string FilePath => Path.Combine(DataDirectory, "settings.json");
     public Settings(string directory) { DataDirectory = directory; }
@@ -30,6 +34,9 @@ public sealed class Settings
                 if (r.TryGetProperty("StartMinimized", out a)) s.StartMinimized = a.GetBoolean();
                 if (r.TryGetProperty("EnableCompositionResults", out a)) s.EnableCompositionResults = a.GetBoolean();
                 if (r.TryGetProperty("HotkeyVk", out a)) s.HotkeyVk = Math.Clamp(a.GetInt32(), 0x70, 0x7b);
+                if (r.TryGetProperty("Mode", out a) && a.TryGetInt32(out var mode) && Enum.IsDefined(typeof(TrackingMode), mode)) s.Mode = (TrackingMode)mode;
+                if (r.TryGetProperty("CountRepeats", out a)) s.CountRepeats = a.GetBoolean();
+                if (r.TryGetProperty("CountInjected", out a)) s.CountInjected = a.GetBoolean();
             }
             catch (Exception e) when (e is JsonException or FormatException or InvalidOperationException)
             {
@@ -42,7 +49,7 @@ public sealed class Settings
     public void Save()
     {
         var temp = FilePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, EnableCompositionResults, HotkeyVk }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, EnableCompositionResults, HotkeyVk, Mode, CountRepeats, CountInjected }, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temp, FilePath, true);
     }
     public static bool AutoStartEnabled()

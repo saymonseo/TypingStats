@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using TypingStats.Core;
 using TypingStats.Storage;
+using Microsoft.Data.Sqlite;
 
 var passed = 0;
 void Test(string name, Action action)
@@ -118,4 +119,63 @@ Test("SQLite idempotence, rollups, backup, restore, privacy, CSV", () =>
     store.SetCategory("editor.exe", "Код"); Equal("Код", store.Categories()["editor.exe"]);
     // Test artifacts intentionally preserved in a named temp folder for inspection.
 });
-Console.WriteLine($"Passed {passed} tests; exit code {Environment.ExitCode}");
+Test("all-key policy independent of text context", () =>
+{
+    Equal(true, KeyIdentity.CountPress(TrackingMode.Keys, false, false, true, false));
+    Equal(true, KeyIdentity.CountPress(TrackingMode.Both, false, false, true, false));
+    Equal(false, KeyIdentity.CountPress(TrackingMode.Text, false, false, true, false));
+    Equal(false, KeyIdentity.CountPress(TrackingMode.Keys, true, false, false, false));
+    Equal(false, KeyIdentity.CountPress(TrackingMode.Keys, false, true, true, false));
+    Equal(true, KeyIdentity.CountPress(TrackingMode.Keys, false, true, true, true));
+});
+Test("left/right Ctrl and main/numpad Enter are separate", () =>
+{
+    Equal("sc:001D", KeyIdentity.Code(0x1d, false, 0xa2)); Equal("sc:E01D", KeyIdentity.Code(0x1d, true, 0xa3));
+    Equal("sc:001C", KeyIdentity.Code(0x1c, false, 0x0d)); Equal("sc:E01C", KeyIdentity.Code(0x1c, true, 0x0d));
+    Equal("A / Ф", KeyIdentity.Label(0x1e, false, 0x41));
+});
+Test("Unicode software packets never persist character-valued scan codes", () =>
+{ Equal("vk:E7", KeyIdentity.Code(0x042f, false, 0xe7)); Equal(KeyIdentity.Label(65, false, 0xe7), KeyIdentity.Label(66, false, 0xe7)); });
+Test("key frequency includes modifiers and repeat but creates no text", () =>
+{
+    var e = new TypingEngine();
+    e.KeyPress(ctx, time, 1000, "sc:0011", "W / Ц"); e.KeyPress(ctx, time.AddSeconds(1), 2000, "sc:0011", "W / Ц", true);
+    e.KeyPress(ctx, time.AddSeconds(2), 3000, "sc:002A", "Left Shift"); e.Stop(time.AddSeconds(3), 4000, "test");
+    Equal(3L, Total(e).KeyPresses); Equal(0L, Total(e).Gross); Equal(3000L, Total(e).KeyActiveMs);
+    Equal(2L, e.PeekKeys().Single(k => k.Code == "sc:0011").Presses);
+    Equal(1L, e.PeekKeys().Single(k => k.Code == "sc:0011").Repeats);
+    var batch = e.Drain(); Equal(3L, batch.Sessions.Single().KeyPresses); Equal(3000L, batch.Sessions.Single().KeyActiveMs);
+});
+Test("key active intervals do not overlap across applications", () =>
+{
+    var e = new TypingEngine(); e.KeyPress(ctx, time, 1000, "sc:0011", "W");
+    e.SetContext(ctx with { App = "game.exe" }, time.AddSeconds(1), 2000); e.Advance(time.AddSeconds(10), 11000);
+    Equal(1000L, Total(e).KeyActiveMs);
+});
+Test("key daily storage retries, backup, CSV and clear", () =>
+{
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-keys-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+    using var store = new StatsStore(Path.Combine(folder, "stats.sqlite")); var e = new TypingEngine();
+    e.KeyPress(ctx, time, 1000, "sc:0011", "W / Ц"); e.KeyPress(ctx, time, 1100, "sc:0011", "W / Ц", true); e.Stop(time, 1200, "test");
+    var batch = e.Drain(); store.Save(batch); store.Save(batch); var date = time.ToLocalTime().ToString("yyyy-MM-dd");
+    Equal(2L, store.ReadKeys(date, date).Single().Presses); Equal(1L, store.ReadKeys(date, date).Single().Repeats);
+    Equal(2L, store.Sessions().Single().KeyPresses);
+    store.Backup(Path.Combine(folder, "backup.sqlite")); store.Clear(); Equal(0, store.ReadKeys(date, date).Count);
+    store.Restore(Path.Combine(folder, "backup.sqlite")); Equal(2L, store.ReadKeys(date, date).Single().Presses);
+    StatsStore.ExportKeys(store.ReadKeys(date, date), Path.Combine(folder, "keys.csv")); Equal(true, File.ReadAllText(Path.Combine(folder, "keys.csv")).Contains("sc:0011"));
+});
+Test("schema 1 migration preserves text statistics and creates backup", () =>
+{
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-migration-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder); var path = Path.Combine(folder, "stats.sqlite");
+    using (var store = new StatsStore(path)) { var e = new TypingEngine(); e.Text(ctx, time, 1000, "abc", false); store.Save(e.Drain()); }
+    using (var db = new SqliteConnection("Data Source=" + path + ";Pooling=False"))
+    {
+        db.Open(); using var c = db.CreateCommand(); c.CommandText = "ALTER TABLE metrics DROP COLUMN KeyPresses; ALTER TABLE metrics DROP COLUMN KeyActiveMs; ALTER TABLE sessions DROP COLUMN KeyPresses; ALTER TABLE sessions DROP COLUMN KeyActiveMs; DROP TABLE key_counts; PRAGMA user_version=1;"; c.ExecuteNonQuery();
+    }
+    using (var upgraded = new StatsStore(path))
+    {
+        var date = time.ToLocalTime().ToString("yyyy-MM-dd"); Equal(3L, Counters.Sum(upgraded.Read(date, date).Select(r => r.Counts)).Gross);
+        Equal(0, upgraded.ReadKeys(date, date).Count); Equal(1, Directory.GetFiles(folder, "before-schema-2-*.sqlite").Length);
+    }
+});
+Console.WriteLine($"TOTAL passed {passed} tests; exit code {Environment.ExitCode}");

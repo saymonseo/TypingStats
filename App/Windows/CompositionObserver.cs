@@ -15,6 +15,12 @@ internal sealed class CompositionObserver : IDisposable
     private readonly Action<CompositionSample> emit;
     private volatile FocusSnapshot? focus;
     private string status = "Инициализация UI Automation";
+    private int enabled = 1;
+    public bool Enabled
+    {
+        get => Volatile.Read(ref enabled) != 0;
+        set { var next = value ? 1 : 0; if (Interlocked.Exchange(ref enabled, next) != next) focusChanged.Set(); }
+    }
     public FocusSnapshot? Focus => focus;
     public string Status => Volatile.Read(ref status);
     public CompositionObserver(Action<CompositionSample> emit)
@@ -33,6 +39,13 @@ internal sealed class CompositionObserver : IDisposable
             automation.AddFocusChangedEventHandler(null!, wakeHandler);
             while (!stop.IsSet)
             {
+                if (!Enabled)
+                {
+                    handler?.Invalidate();
+                    if (element != null && handler != null) try { automation.RemoveTextEditTextChangedEventHandler(element, handler); } catch (COMException) { }
+                    Release(element); element = null; handler = null; token = null; focus = null;
+                    Volatile.Write(ref status, "Режим клавиш: текстовые события не используются"); WaitForFocus(); continue;
+                }
                 try
                 {
                     var current = automation.GetFocusedElement();

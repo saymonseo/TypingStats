@@ -28,6 +28,7 @@ public sealed class Collector : IDisposable
     private volatile bool paused, running = true;
     private long dropped, lastFlush, lastForegroundCheck;
     private uint lastForeground;
+    private TrackingMode appliedMode;
     private string? storageError;
     private string status = "Учёт работает";
     private string RecoveryPath => Path.Combine(settings.DataDirectory, "pending-aggregates.json");
@@ -39,7 +40,7 @@ public sealed class Collector : IDisposable
     public StatsStore Store => store;
     public Collector(Settings settings, StatsStore store)
     {
-        this.settings = settings; this.store = store;
+        this.settings = settings; this.store = store; appliedMode = settings.Mode;
         if (File.Exists(RecoveryPath))
         {
             var recovered = JsonSerializer.Deserialize<List<FlushBatch>>(File.ReadAllText(RecoveryPath)) ?? [];
@@ -47,6 +48,7 @@ public sealed class Collector : IDisposable
             File.Delete(RecoveryPath);
         }
         observer = new CompositionObserver(sample => Enqueue(sample));
+        observer.Enabled = settings.Mode != TrackingMode.Keys;
         keyboard = new KeyboardCapture(sample =>
         {
             if (paused) { Array.Clear(sample.State); return; }
@@ -69,6 +71,9 @@ public sealed class Collector : IDisposable
                 {
                     var now = DateTimeOffset.UtcNow; var mono = Environment.TickCount64;
                     engine.IdleSeconds = settings.IdleSeconds; engine.SessionSeconds = settings.SessionSeconds;
+                    observer.Enabled = settings.Mode != TrackingMode.Keys;
+                    if (appliedMode != settings.Mode)
+                    { ResolveOutstanding(); engine.Stop(now, mono, "mode-change"); Flush(); appliedMode = settings.Mode; }
                     if (item is Command command)
                     {
                         try { command.Action(); command.Completion.SetResult(); }
@@ -129,6 +134,9 @@ public sealed class Collector : IDisposable
         var token = focus?.Pid == s.Pid ? focus.Token : s.Pid + ":hwnd:" + s.Focus;
         current = new InputContext(AppName(s.Pid), Profile(s.Layout), token);
         engine.Key(current, s.Utc, s.Mono, s.Repeat, s.Injected);
+        if (KeyIdentity.CountPress(settings.Mode, s.Repeat, s.Injected, settings.CountRepeats, settings.CountInjected))
+            engine.KeyPress(current, s.Utc, s.Mono, KeyIdentity.Code(s.Scan, s.Extended, s.Key), KeyIdentity.Label(s.Scan, s.Extended, s.Key), s.Repeat, s.Injected);
+        if (settings.Mode == TrackingMode.Keys) return;
         if (s.Injected) { engine.BreakSeries(); return; }
         var vk = s.Key; var ctrl = (s.State[0x11] & 128) != 0; var alt = (s.State[0x12] & 128) != 0;
         var altGr = (s.State[0xa5] & 128) != 0 && ctrl;
@@ -189,7 +197,7 @@ public sealed class Collector : IDisposable
     }
     private void ProcessComposition(CompositionSample sample)
     {
-        if (!settings.EnableCompositionResults) return;
+        if (settings.Mode == TrackingMode.Keys || !settings.EnableCompositionResults) return;
         if (!compositions.TryGetValue(sample.Token, out var entry))
         {
             if (sample.Finished) engine.Unresolved(new InputContext(AppName((uint)sample.Pid), "UIA / unknown", sample.Token), sample.Utc);
@@ -217,7 +225,7 @@ public sealed class Collector : IDisposable
     }
     private void Flush()
     {
-        var batch = engine.Drain(); if (batch.Rows.Count != 0 || batch.Sessions.Count != 0) retries.Add(batch);
+        var batch = engine.Drain(); if (batch.Rows.Count != 0 || batch.Sessions.Count != 0 || (batch.Keys?.Count ?? 0) != 0) retries.Add(batch);
         try
         {
             while (retries.Count > 0) { store.Save(retries[0]); retries.RemoveAt(0); }
@@ -226,7 +234,7 @@ public sealed class Collector : IDisposable
         catch (Exception e)
         {
             Volatile.Write(ref storageError, "Не сохранено: " + e.GetType().Name);
-            if (retries.Sum(b => b.Rows.Count) * 400L > 16 * 1024 * 1024)
+            if (retries.Sum(b => b.Rows.Count + (b.Keys?.Count ?? 0)) * 400L > 16 * 1024 * 1024)
             { paused = true; Volatile.Write(ref status, "Учёт остановлен: хранилище"); }
         }
     }
@@ -243,6 +251,8 @@ public sealed class Collector : IDisposable
         keyboard.Resync(); Flush(); Volatile.Write(ref status, value ? "Пауза" : "Учёт работает");
     });
     public Task SaveNow() => Invoke(Flush);
+    public Task SetMode(TrackingMode mode) => Invoke(() =>
+    { ResolveOutstanding(); engine.Stop(DateTimeOffset.UtcNow, Environment.TickCount64, "mode-change"); Flush(); settings.Mode = mode; appliedMode = mode; settings.Save(); });
     /// <summary>Controlled metadata pipeline test; never injects keys into another window.</summary>
     public Task VerifyPipeline() => Invoke(() =>
     {
@@ -272,8 +282,23 @@ public sealed class Collector : IDisposable
         var result = Counters.Sum(store.Read("2000-01-01", "9999-12-31", 2).Select(r => r.Counts));
         if (result.Estimated != 3 || result.Observed != 2 || result.LinkedBackspaces != 1 || result.Pastes != 2)
             throw new InvalidOperationException($"Pipeline mismatch: estimated={result.Estimated}, observed={result.Observed}, linked={result.LinkedBackspaces}, paste={result.Pastes}");
+        var baselineKeys = result.KeyPresses;
+        settings.Mode = TrackingMode.Keys; appliedMode = TrackingMode.Keys; settings.CountRepeats = false;
+        void Plain(uint vk, uint scan, bool extended = false, bool repeat = false, bool injected = false)
+        { ProcessKey(new KeyEvent(new KeyboardSample(vk, scan, emptyState, repeat, injected, pid, 0, layout, utc, mono++, extended), null)); }
+        // No editable field: game controls, shortcuts, modifiers and function keys still count.
+        Plain(0x57,0x11); Plain(0x41,0x1e); Plain(0x53,0x1f); Plain(0x44,0x20); Plain(0x20,0x39);
+        Plain(0xa0,0x2a); Plain(0xa3,0x1d,true); Plain(0x0d,0x1c); Plain(0x0d,0x1c,true);
+        Plain(0x5b,0x5b,true); Plain(0x70,0x3b); Plain(0x1b,0x01);
+        Plain(0x57,0x11,repeat:true); Plain(0xe7,0x042f,injected:true);
+        settings.CountInjected = true; Plain(0xe7,0x042f,injected:true);
+        settings.CountInjected = false; settings.CountRepeats = true;
+        engine.Stop(utc,mono,"key-policy-verification"); Flush();
+        var keyResult = Counters.Sum(store.Read("2000-01-01","9999-12-31",2).Select(r => r.Counts));
+        if (keyResult.KeyPresses != baselineKeys + 13 || keyResult.Gross != result.Gross || store.ReadKeys("2000-01-01","9999-12-31").Sum(k => k.Presses) != keyResult.KeyPresses)
+            throw new InvalidOperationException("All-key mode / repeat / injected policy mismatch");
         File.WriteAllText(Path.Combine(settings.DataDirectory, "pipeline-report.json"), JsonSerializer.Serialize(new
-        { Test = "controlled metadata (not physical keyboard / IME compatibility)", Passed = true, Estimated = result.Estimated, Observed = result.Observed, Net = result.Net, Pastes = result.Pastes }, new JsonSerializerOptions { WriteIndented = true }));
+        { Test = "controlled metadata (not physical keyboard / live game compatibility)", Passed = true, Estimated = result.Estimated, Observed = result.Observed, Net = result.Net, Pastes = result.Pastes, KeyModePassed = true, KeyPresses = keyResult.KeyPresses, NoTextAddedInKeyMode = keyResult.Gross == result.Gross }, new JsonSerializerOptions { WriteIndented = true }));
     });
     public Task BoundaryNow() => Invoke(() =>
     { ResolveOutstanding(); engine.Stop(DateTimeOffset.UtcNow, Environment.TickCount64, "system"); keyboard.Resync(); Flush(); });
@@ -294,6 +319,16 @@ public sealed class Collector : IDisposable
         {
             var rows = store.Read(start, end, resolution).ToList();
             foreach (var row in retries.SelectMany(b => b.Rows).Concat(engine.Peek()))
+                if (string.CompareOrdinal(row.Key.LocalDate, start) >= 0 && string.CompareOrdinal(row.Key.LocalDate, end) <= 0) rows.Add(row);
+            return rows;
+        }
+    }
+    public IReadOnlyList<KeyMetricRow> ReadKeys(string start, string end)
+    {
+        lock (viewGate)
+        {
+            var rows = store.ReadKeys(start, end).ToList();
+            foreach (var row in retries.SelectMany(b => b.Keys ?? []).Concat(engine.PeekKeys()))
                 if (string.CompareOrdinal(row.Key.LocalDate, start) >= 0 && string.CompareOrdinal(row.Key.LocalDate, end) <= 0) rows.Add(row);
             return rows;
         }

@@ -16,6 +16,7 @@ pipeline-report.json
 benchmark-report.json
 native-probe.json
 engine-probe.json
+metric-layout.json
 tab-*.png
 settings-ui.png
 *.csv

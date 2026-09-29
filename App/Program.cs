@@ -129,11 +129,14 @@ internal sealed class TrayHost : ApplicationContext
         }
         if (smoke || ticks % 30 != 0) return;
         var day = DateTime.Today.ToString("yyyy-MM-dd");
-        if (collector.Settings.DailyGoal > 0 && goalDay != day)
+        var goalId = day + "-" + collector.Settings.Mode;
+        if (collector.Settings.DailyGoal > 0 && goalDay != goalId)
         {
-            var count = collector.Read(day, day, 2).Sum(x => x.Counts.Gross);
+            var counters = TypingStats.Core.Counters.Sum(collector.Read(day, day, 2).Select(x => x.Counts));
+            var keysMode = collector.Settings.Mode == TypingStats.Core.TrackingMode.Keys;
+            var count = keysMode ? counters.KeyPresses : counters.Gross;
             if (count >= collector.Settings.DailyGoal)
-            { goalDay = day; tray.ShowBalloonTip(3500, "Дневная цель выполнена", $"Сегодня напечатано {count:N0} символов.", ToolTipIcon.Info); }
+            { goalDay = goalId; tray.ShowBalloonTip(3500, "Дневная цель выполнена", keysMode ? $"Сегодня {count:N0} нажатий клавиш." : $"Сегодня напечатано {count:N0} символов.", ToolTipIcon.Info); }
         }
         if (backupDay != day && collector.StorageError == null)
         {

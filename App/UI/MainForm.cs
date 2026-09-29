@@ -16,6 +16,11 @@ internal sealed class MainForm : Form
     private readonly DateTimePicker end = new() { Format = DateTimePickerFormat.Short, Width = 145 };
     private readonly Label state = new() { Dock = DockStyle.Bottom, Height = Theme.P(32), Padding = new Padding(Theme.P(18), 0, 0, 0), ForeColor = Theme.Muted, Font = Theme.Font(11), TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label[] values = new Label[4];
+    private readonly Label[] metricCaptions = new Label[4];
+    private readonly ComboBox modePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = Theme.P(172), Font = Theme.Font() };
+    private readonly KeyboardMap keyboardMap = new() { Dock = DockStyle.Top, Height = Theme.P(232) };
+    private readonly DataGridView keyGrid = Grid();
+    private IReadOnlyList<KeyMetricRow> keyRows = [];
     private readonly HistoryChart chart = new() { Dock = DockStyle.Fill };
     private readonly Heatmap heatmap = new() { Dock = DockStyle.Fill };
     private readonly DataGridView apps = Grid(), sessions = Grid(), profiles = Grid();
@@ -27,6 +32,7 @@ internal sealed class MainForm : Form
     private readonly Panel pageHost = new() { Dock = DockStyle.Fill, BackColor = Theme.Card };
     private readonly List<Control> pages = new();
     private readonly List<ModernButton> navigation = new();
+    private static readonly HashSet<Label> fittingMetrics = new();
     private readonly Label sectionTitle = Theme.Label("Динамика набора", 17, bold: true);
     private readonly Label sectionHint = Theme.Label("Распределение символов за выбранный период", 11, Theme.Muted);
     private int selectedPage;
@@ -47,7 +53,7 @@ internal sealed class MainForm : Form
         var brand = Theme.Label("TypingStats", 19, Color.White, true); brand.Location = new Point(Theme.P(48), Theme.P(5)); brand.Size = new Size(Theme.P(126), Theme.P(38));
         var tagline = Theme.Label("ЛОКАЛЬНАЯ СТАТИСТИКА", 9, Color.FromArgb(145, 165, 191)); tagline.Location = new Point(Theme.P(8), Theme.P(53)); tagline.Size = new Size(Theme.P(166), Theme.P(20));
         branding.Controls.AddRange([mark, brand, tagline]); side.Controls.Add(branding);
-        var sideFooter = Theme.Label("0.1.1  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
+        var sideFooter = Theme.Label("0.2.0  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, Theme.P(8), 0, 0) }; side.Controls.Add(nav); nav.BringToFront();
         var shell = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page }; Controls.Add(shell); Controls.Add(side);
         shell.Controls.Add(state);
@@ -63,7 +69,9 @@ internal sealed class MainForm : Form
         period.Font = Theme.Font(); period.FlatStyle = FlatStyle.Flat; period.Width = Theme.P(155); period.Height = Theme.P(36);
         start.Font = end.Font = Theme.Font(); start.Width = end.Width = Theme.P(140);
         period.Margin = start.Margin = end.Margin = new Padding(0, 0, Theme.P(8), 0);
-        actions.Controls.AddRange([period, start, end, pause]);
+        modePicker.Items.AddRange(["Текст", "Все нажатия", "Текст + клавиши"]); modePicker.SelectedIndex = (int)collector.Settings.Mode;
+        modePicker.Margin = new Padding(0, 0, Theme.P(8), 0);
+        actions.Controls.AddRange([modePicker, period, start, end, pause]);
         AddButton(actions, "Экспорт CSV", Export);
         root.Controls.Add(actions, 0, 1);
         var cards = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4 };
@@ -73,6 +81,7 @@ internal sealed class MainForm : Form
             cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             var p = new CardPanel { Dock = DockStyle.Fill, Margin = new Padding(0, Theme.P(4), i == 3 ? 0 : Theme.P(10), Theme.P(14)), Padding = new Padding(Theme.P(14)) };
             var label = Theme.Label(captions[i], 11, Theme.Muted); label.Dock = DockStyle.Top; label.Height = Theme.P(23);
+            metricCaptions[i] = label;
             values[i] = Theme.Label("—", 34, i == 0 ? Theme.Blue : Theme.Ink, true); values[i].Dock = DockStyle.Bottom; values[i].Height = Theme.P(50); values[i].Font = Theme.Font(34, true, true);
             var figure = values[i]; figure.Tag = 34; figure.AutoEllipsis = true;
             figure.TextChanged += (_, _) => FitMetric(figure); figure.SizeChanged += (_, _) => FitMetric(figure);
@@ -83,8 +92,9 @@ internal sealed class MainForm : Form
         appSearch.Font = Theme.Font(); appSearch.BorderStyle = BorderStyle.FixedSingle; appSearch.BackColor = Theme.Page;
         appSearch.TextChanged += (_, _) => RefreshData();
         quality.Font = Theme.Font(12); quality.ForeColor = Theme.Muted; quality.BackColor = Theme.Card;
-        pages.AddRange([chart, appPanel, heatmap, sessions, profiles, quality]);
-        var titles = new[] { "Обзор", "Приложения", "Тепловая карта", "Сессии", "Раскладки", "Качество данных" };
+        var keyboardPage = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Card }; keyboardPage.Controls.Add(keyGrid); keyboardPage.Controls.Add(keyboardMap);
+        pages.AddRange([chart, appPanel, keyboardPage, heatmap, sessions, profiles, quality]);
+        var titles = new[] { "Обзор", "Приложения", "Клавиши", "Тепловая карта", "Сессии", "Раскладки", "Качество данных" };
         for (var i = 0; i < titles.Length; i++)
         {
             var index = i; var button = new ModernButton { Text = titles[i], Navigation = true, Width = Theme.P(158), Height = Theme.P(42), Margin = new Padding(0, 0, 0, Theme.P(5)) };
@@ -101,6 +111,11 @@ internal sealed class MainForm : Form
         content.Controls.Add(pageHost); content.Controls.Add(pageHeader); root.Controls.Add(content, 0, 3); SelectPage(0);
         var tooltip = new ToolTip(); tooltip.SetToolTip(values[1], "Оценка с вычетом связанных Backspace. Не равна длине документа. За выбранный период может быть отрицательной.");
         period.SelectedIndexChanged += (_, _) => { UpdateDates(); RefreshData(); };
+        modePicker.SelectedIndexChanged += async (_, _) =>
+        {
+            if (updating || modePicker.SelectedIndex < 0 || (int)collector.Settings.Mode == modePicker.SelectedIndex) return;
+            try { await collector.SetMode((TrackingMode)modePicker.SelectedIndex); RefreshData(); } catch (Exception e) { ShowError(e); }
+        };
         start.ValueChanged += (_, _) => { if (!updating) RefreshData(); }; end.ValueChanged += (_, _) => { if (!updating) RefreshData(); };
         pause.Click += async (_, _) => { try { await collector.TogglePause(); RefreshData(); } catch (Exception e) { ShowError(e); } };
         apps.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) SetCategory(apps.Rows[e.RowIndex].Cells[0].Value?.ToString() ?? ""); };
@@ -122,8 +137,9 @@ internal sealed class MainForm : Form
     {
         selectedPage = index; pageHost.Controls.Clear(); pageHost.Controls.Add(pages[index]);
         for (var i = 0; i < navigation.Count; i++) { navigation[i].Selected = i == index; navigation[i].Invalidate(); }
-        sectionTitle.Text = new[] { "Динамика набора", "Где вы печатаете", "Ритм по дням и часам", "Сессии работы", "Профили ввода", "Качество измерений" }[index];
-        sectionHint.Text = new[] { "Символы за выбранный период", "Двойной щелчок — назначить категорию", "Чем насыщеннее цвет, тем больше набрано", "Завершённые сессии и активное время", "Раскладка не определяет язык текста", "Измеренные результаты, оценки и пропуски" }[index];
+        sectionTitle.Text = new[] { "Динамика активности", "Статистика по приложениям", "Какие клавиши вы нажимаете", "Ритм по дням и часам", "Сессии работы", "Профили ввода", "Качество измерений" }[index];
+        sectionHint.Text = new[] { "Показатели выбранного режима", "Двойной щелчок — назначить категорию", "Основной блок на схеме; Numpad и другие кнопки — в таблице", "Чем насыщеннее цвет, тем больше активность", "Завершённые сессии и активное время", "Раскладка не определяет язык текста", "Измеренные результаты, оценки и пропуски" }[index];
+        RefreshData();
     }
     private static void AddButton(FlowLayoutPanel p, string text, Action action)
     { var b = new ModernButton { Text = text, Width = Theme.P(128) }; b.Click += (_, _) => action(); p.Controls.Add(b); }
@@ -145,33 +161,42 @@ internal sealed class MainForm : Form
             if (end.Value.Date < start.Value.Date) { state.Text = "Дата окончания раньше начала"; return; }
             var old = start.Value.Date < DateTime.Today.AddYears(-2);
             rows = collector.Read(start.Value.ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd"), old ? 2 : 1);
+            keyRows = collector.ReadKeys(start.Value.ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd"));
+            var keysMode = collector.Settings.Mode == TrackingMode.Keys;
+            updating = true; modePicker.SelectedIndex = (int)collector.Settings.Mode; updating = false;
             var c = Counters.Sum(rows.Select(r => r.Counts));
-            values[0].Text = c.Gross.ToString("N0"); values[1].Text = c.Net.ToString("N0");
-            values[2].Text = c.ActiveMs >= 3600000 ? $"{c.ActiveMs / 3600000}ч {c.ActiveMs / 60000 % 60}м" : $"{c.ActiveMs / 60000}м {c.ActiveMs / 1000 % 60}с";
-            values[3].Text = c.ActiveMs < 30000 ? "мало данных" : (c.Gross * 60000.0 / c.ActiveMs).ToString("N0");
-            var speedSize = c.ActiveMs < 30000 ? 14 : 34;
+            var captions = keysMode ? new[] { "Всего нажатий", "Клавиш использовано", "Активное время", "Нажатий / мин" } : new[] { "Напечатано", "После правок ≈", "Активное время", "Символов / мин" };
+            for (var i = 0; i < 4; i++) metricCaptions[i].Text = captions[i];
+            values[0].Text = (keysMode ? c.KeyPresses : c.Gross).ToString("N0"); values[1].Text = keysMode ? keyRows.Select(k => k.Code).Distinct().Count().ToString("N0") : c.Net.ToString("N0");
+            var active = keysMode ? c.KeyActiveMs : c.ActiveMs;
+            values[2].Text = active >= 3600000 ? $"{active / 3600000}ч {active / 60000 % 60}м" : $"{active / 60000}м {active / 1000 % 60}с";
+            values[3].Text = active < 30000 ? "мало данных" : ((keysMode ? c.KeyPresses : c.Gross) * 60000.0 / active).ToString("N0");
+            var speedSize = active < 30000 ? 14 : 34;
             if ((int?)values[3].Tag != speedSize) { values[3].Tag = speedSize; FitMetric(values[3]); }
             pause.Text = collector.Paused ? "Продолжить" : "Пауза";
-            state.Text = (collector.StorageError ?? collector.Status) + $"   ·   Измерено {c.Observed:N0}   ·   Оценено {c.Estimated:N0}   ·   Пропуски {c.Unresolved + c.Lost:N0}";
+            state.Text = (collector.StorageError ?? collector.Status) + $"   ·   Нажатий {c.KeyPresses:N0}   ·   Измерено {c.Observed:N0}   ·   Оценено {c.Estimated:N0}   ·   Пропуски {c.Unresolved + c.Lost:N0}";
             var single = start.Value.Date == end.Value.Date;
             chart.Values = single && !old
-                ? Enumerable.Range(0, 24).Select(h => { var n = Counters.Sum(rows.Where(r => r.Key.Hour == h).Select(r => r.Counts)); return (h.ToString("00"), n.Gross, n.Net); }).ToArray()
-                : rows.GroupBy(r => r.Key.LocalDate).OrderBy(g => g.Key).Select(g => { var n = Counters.Sum(g.Select(r => r.Counts)); return (DateTime.Parse(g.Key).ToString("dd.MM"), n.Gross, n.Net); }).ToArray();
-            chart.Invalidate(); heatmap.Rows = old ? [] : rows; heatmap.Invalidate();
+                ? Enumerable.Range(0, 24).Select(h => { var n = Counters.Sum(rows.Where(r => r.Key.Hour == h).Select(r => r.Counts)); return (h.ToString("00"), keysMode ? n.KeyPresses : n.Gross, keysMode ? 0 : n.Net); }).ToArray()
+                : rows.GroupBy(r => r.Key.LocalDate).OrderBy(g => g.Key).Select(g => { var n = Counters.Sum(g.Select(r => r.Counts)); return (DateTime.Parse(g.Key).ToString("dd.MM"), keysMode ? n.KeyPresses : n.Gross, keysMode ? 0 : n.Net); }).ToArray();
+            chart.KeysMode = keysMode; chart.Invalidate(); heatmap.KeysMode = keysMode; heatmap.Rows = old ? [] : rows; heatmap.Invalidate();
+            keyboardMap.SetRows(keyRows);
+            var keyTotal = Math.Max(1, keyRows.Sum(k => k.Presses));
+            Bind(keyGrid, keyRows.GroupBy(k => k.Code).Select(g => new { Клавиша = g.First().Label, Нажатий = g.Sum(k => k.Presses), ДоляПроцентов = Math.Round(g.Sum(k => k.Presses) * 100.0 / keyTotal, 2), Автоповтор = g.Sum(k => k.Repeats), Программные = g.Sum(k => k.Injected) }).OrderByDescending(k => k.Нажатий).ToArray());
             var cats = collector.Store.Categories();
             Bind(apps, rows.Where(r => r.Key.App.Contains(appSearch.Text, StringComparison.CurrentCultureIgnoreCase)).GroupBy(r => r.Key.App).Select(g =>
             {
                 var n = Counters.Sum(g.Select(r => r.Counts));
-                return new { Приложение = g.Key, Категория = cats.GetValueOrDefault(g.Key, "Прочее"), Напечатано = n.Gross,
+                return new { Приложение = g.Key, Категория = cats.GetValueOrDefault(g.Key, "Прочее"), Нажатий = n.KeyPresses, Напечатано = n.Gross,
                     ПослеИсправлений = n.Net, Backspace = n.Backspaces, Delete = n.Deletes, Минуты = Math.Round(n.ActiveMs / 60000.0, 1),
                     ОцененоПроцентов = n.Gross == 0 ? 0 : Math.Round(n.Estimated * 100.0 / n.Gross, 1) };
-            }).OrderByDescending(x => x.Напечатано).ToArray());
-            Bind(profiles, rows.GroupBy(r => r.Key.Profile).Select(g => { var n = Counters.Sum(g.Select(r => r.Counts)); return new { ПрофильВвода = g.Key, Напечатано = n.Gross, ПоРезультату = n.Observed, Оценено = n.Estimated, Неизвестных = n.Unresolved }; }).OrderByDescending(x => x.Напечатано).ToArray());
+            }).OrderByDescending(x => keysMode ? x.Нажатий : x.Напечатано).ToArray());
+            Bind(profiles, rows.GroupBy(r => r.Key.Profile).Select(g => { var n = Counters.Sum(g.Select(r => r.Counts)); return new { ПрофильВвода = g.Key, Нажатий = n.KeyPresses, Напечатано = n.Gross, ПоРезультату = n.Observed, Оценено = n.Estimated, Неизвестных = n.Unresolved }; }).OrderByDescending(x => keysMode ? x.Нажатий : x.Напечатано).ToArray());
             Bind(sessions, collector.Store.Sessions().Where(s => string.CompareOrdinal(s.Start.ToLocalTime().ToString("yyyy-MM-dd"), start.Value.ToString("yyyy-MM-dd")) >= 0 && string.CompareOrdinal(s.Start.ToLocalTime().ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd")) <= 0)
-                .Select(s => new { Начало = s.Start.ToLocalTime().ToString("dd.MM HH:mm"), Окончание = s.End.ToLocalTime().ToString("HH:mm"), Напечатано = s.Gross, АктивныхМинут = Math.Round(s.ActiveMs / 60000.0, 1), Причина = s.Reason }).ToArray());
+                .Select(s => new { Начало = s.Start.ToLocalTime().ToString("dd.MM HH:mm"), Окончание = s.End.ToLocalTime().ToString("HH:mm"), Нажатий = s.KeyPresses, Напечатано = s.Gross, АктивныхМинут = Math.Round((keysMode ? s.KeyActiveMs : s.ActiveMs) / 60000.0, 1), Причина = s.Reason }).ToArray());
             quality.Text = $"Состояние: {collector.Status}\r\n{collector.UiaStatus}\r\n\r\nПо результату композиции: {c.Observed:N0}\r\nОценено по клавишам: {c.Estimated:N0}\r\nНеизвестных сценариев: {c.Unresolved:N0}\r\nПотерянных событий: {c.Lost:N0}\r\nInjected без установленного источника: {c.Injected:N0}\r\n\r\nBackspace: {c.Backspaces:N0}; связанных: {c.LinkedBackspaces:N0}\r\nDelete: {c.Deletes:N0}; удалений слов: {c.WordDeletes:N0}\r\nВставок клавишами: {c.Pastes:N0}; Undo: {c.Undo:N0}; Redo: {c.Redo:N0}\r\n\r\nВсе клавиатурные значения — оценки, включая команды нестандартных редакторов.\r\nEnter/Tab не прибавляются без проверенного контекста. Dead keys отмечаются как неизвестные.\r\nРезультаты IME учитываются при полученных событиях Composition + Finalized.\r\nEmoji-панель, software keyboard и нестандартные IME ещё не заявлены как проверенные.\r\n\r\nПосле исправлений — оценка с вычетом связанных Backspace, не длина документа.\r\nОтрицательное значение за период означает удаление ввода из прошлого периода.\r\nПолная совместимость конкретных программ требует проверки.\r\n\r\nДанные: {collector.Settings.DataDirectory}\r\nХранится только статистика. Текст, заголовки окон и clipboard не записываются.\r\n{(old ? "Для старого периода доступны дневные данные; почасовая карта недоступна." : "")}";
         }
-        catch (Exception e) { state.Text = "Не удалось прочитать данные: " + e.GetType().Name; }
+        catch (Exception e) { updating = false; state.Text = "Не удалось прочитать данные: " + e.GetType().Name; }
     }
     private static void Bind<T>(DataGridView grid, T[] data)
     {
@@ -180,17 +205,22 @@ internal sealed class MainForm : Form
         var fields = typeof(T).GetProperties(); var table = new DataTable();
         foreach (var field in fields) table.Columns.Add(field.Name, field.PropertyType);
         foreach (var item in data) table.Rows.Add(fields.Select(f => f.GetValue(item)).ToArray());
-        var view = table.DefaultView; if (!string.IsNullOrEmpty(sort)) view.Sort = sort;
+        var view = table.DefaultView; if (!string.IsNullOrEmpty(sort)) try { view.Sort = sort; } catch (Exception e) when (e is DataException or IndexOutOfRangeException or ArgumentException) { }
         grid.DataSource = view;
         foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.Automatic;
-        var captions = new Dictionary<string, string> { ["ПослеИсправлений"] = "Правки ≈", ["ОцененоПроцентов"] = "Оценено, %", ["АктивныхМинут"] = "Активно, мин", ["Минуты"] = "Активно, мин", ["ПрофильВвода"] = "Профиль ввода", ["ПоРезультату"] = "По результату" };
+        var captions = new Dictionary<string, string> { ["ДоляПроцентов"] = "Доля, %", ["ПослеИсправлений"] = "Правки ≈", ["ОцененоПроцентов"] = "Оценено, %", ["АктивныхМинут"] = "Активно, мин", ["Минуты"] = "Активно, мин", ["ПрофильВвода"] = "Профиль ввода", ["ПоРезультату"] = "По результату" };
         foreach (DataGridViewColumn column in grid.Columns) if (captions.TryGetValue(column.DataPropertyName, out var caption)) column.HeaderText = caption;
         if (selected != null) foreach (DataGridViewRow row in grid.Rows)
             if (row.Cells[0].Value?.ToString() == selected) { row.Selected = true; break; }
     }
     private static void FitMetric(Label label)
     {
-        if (label.Width <= 0) return;
+        if (label.Parent == null || !fittingMetrics.Add(label)) return;
+        try
+        {
+        var availableWidth = label.Parent.ClientSize.Width - label.Parent.Padding.Horizontal;
+        if (availableWidth <= 0) return;
+        label.Width = availableWidth;
         var size = label.Tag is int max ? max : 34;
         Font candidate;
         while (true)
@@ -201,9 +231,14 @@ internal sealed class MainForm : Form
         }
         if (Math.Abs(label.Font.Size - candidate.Size) < .1f) candidate.Dispose();
         else { var previous = label.Font; label.Font = candidate; previous.Dispose(); }
+        // Label.OnFontChanged can restore its default requested width (100 px).
+        label.Width = availableWidth;
+        }
+        finally { fittingMetrics.Remove(label); }
     }
     public void RenderVerificationTabs(string folder)
     {
+        File.WriteAllText(Path.Combine(folder, "metric-layout.json"), System.Text.Json.JsonSerializer.Serialize(values.Select(v => new { v.Text, Width = v.Width, Height = v.Height, FontSize = v.Font.Size, Unit = v.Font.Unit.ToString(), ParentWidth = v.Parent?.Width }).ToArray()));
         var selected = selectedPage;
         for (var i = 0; i < pages.Count; i++)
         {
@@ -220,7 +255,7 @@ internal sealed class MainForm : Form
     {
         using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "typing-stats-" + DateTime.Today.ToString("yyyy-MM-dd") + ".csv" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        try { StatsStore.Export(rows, dialog.FileName); MessageBox.Show(this, "Статистика экспортирована.", "TypingStats"); } catch (Exception e) { ShowError(e); }
+        try { if (selectedPage == 2) StatsStore.ExportKeys(keyRows, dialog.FileName); else StatsStore.Export(rows, dialog.FileName); MessageBox.Show(this, "Статистика экспортирована.", "TypingStats"); } catch (Exception e) { ShowError(e); }
     }
     private async void Backup()
     {

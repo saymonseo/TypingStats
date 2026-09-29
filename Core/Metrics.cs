@@ -23,6 +23,8 @@ public sealed class Counters
     public long ActiveMs { get; set; }
     public long Whitespace { get; set; }
     public long Injected { get; set; }
+    public long KeyPresses { get; set; }
+    public long KeyActiveMs { get; set; }
     public long Gross => Observed + Estimated;
     public long Net => Gross - LinkedBackspaces;
     public Counters Copy() => (Counters)MemberwiseClone();
@@ -34,6 +36,7 @@ public sealed class Counters
         Undo += other.Undo; Redo += other.Redo; Cuts += other.Cuts; Unresolved += other.Unresolved;
         Lost += other.Lost; Commits += other.Commits; Cancels += other.Cancels; ActiveMs += other.ActiveMs;
         Whitespace += other.Whitespace; Injected += other.Injected;
+        KeyPresses += other.KeyPresses; KeyActiveMs += other.KeyActiveMs;
     }
     public static Counters Sum(IEnumerable<Counters> rows)
     {
@@ -43,8 +46,8 @@ public sealed class Counters
 
 public readonly record struct BucketKey(long UtcMinute, string LocalDate, int Hour, int Offset, string Zone, string App, string Profile);
 public sealed record MetricRow(BucketKey Key, Counters Counts);
-public sealed record FlushBatch(string Id, IReadOnlyList<MetricRow> Rows, IReadOnlyList<TypingSession> Sessions);
-public sealed record TypingSession(string Id, DateTimeOffset Start, DateTimeOffset End, long Gross, long ActiveMs, string Reason);
+public sealed record FlushBatch(string Id, IReadOnlyList<MetricRow> Rows, IReadOnlyList<TypingSession> Sessions, IReadOnlyList<KeyMetricRow>? Keys = null);
+public sealed record TypingSession(string Id, DateTimeOffset Start, DateTimeOffset End, long Gross, long ActiveMs, string Reason, long KeyPresses = 0, long KeyActiveMs = 0);
 public readonly record struct InputContext(string App, string Profile, string Field);
 
 /// <summary>Only a bounded final grapheme survives between events; never persists text.</summary>

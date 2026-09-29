@@ -7,6 +7,8 @@ internal sealed class HistoryChart : Control
 {
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public IReadOnlyList<(string Label, long Gross, long Net)> Values { get; set; } = [];
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool KeysMode { get; set; }
     public HistoryChart() { DoubleBuffered = true; BackColor = Theme.Card; Font = Theme.Font(11); }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -18,7 +20,7 @@ internal sealed class HistoryChart : Control
             using var blue = new SolidBrush(Theme.BlueSoft);
             for (var i = 0; i < 3; i++) { var h = Theme.P(20 + i * 14); using var p = Theme.Round(new RectangleF(cx - Theme.P(29) + i * Theme.P(22), cy - h, Theme.P(16), h), Theme.P(4)); g.FillPath(blue, p); }
             using var heading = Theme.Font(16, true); using var format = new StringFormat { Alignment = StringAlignment.Center };
-            g.DrawString("Пока нет набора текста", heading, ink, new RectangleF(0, cy + Theme.P(18), Width, Theme.P(30)), format);
+            g.DrawString(KeysMode ? "Пока нет нажатий" : "Пока нет набора текста", heading, ink, new RectangleF(0, cy + Theme.P(18), Width, Theme.P(30)), format);
             g.DrawString("Начните печатать — здесь появится ваша активность", Font, ink, new RectangleF(0, cy + Theme.P(52), Width, Theme.P(25)), format); return;
         }
         var left = Theme.P(52); var top = Theme.P(18); var width = Math.Max(1, Width - left - Theme.P(12)); var height = Math.Max(1, Height - Theme.P(83));
@@ -44,8 +46,8 @@ internal sealed class HistoryChart : Control
             if (i % every == 0) g.DrawString(Values[i].Label, Font, ink, x, top + height + Theme.P(12));
         }
         var legendY = Height - Theme.P(20);
-        g.FillEllipse(grossBrush, left, legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString("Напечатано", Font, ink, left + Theme.P(14), legendY);
-        g.FillEllipse(netBrush, left + Theme.P(122), legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString("После правок ≈", Font, ink, left + Theme.P(136), legendY);
+        g.FillEllipse(grossBrush, left, legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString(KeysMode ? "Нажатия" : "Напечатано", Font, ink, left + Theme.P(14), legendY);
+        if (!KeysMode) { g.FillEllipse(netBrush, left + Theme.P(122), legendY + Theme.P(3), Theme.P(7), Theme.P(7)); g.DrawString("После правок ≈", Font, ink, left + Theme.P(136), legendY); }
     }
 }
 
@@ -53,6 +55,8 @@ internal sealed class Heatmap : Control
 {
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public IReadOnlyList<MetricRow> Rows { get; set; } = [];
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public bool KeysMode { get; set; }
     public Heatmap() { DoubleBuffered = true; BackColor = Theme.Card; Font = Theme.Font(11); }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -60,7 +64,7 @@ internal sealed class Heatmap : Control
         foreach (var r in Rows)
         {
             if (r.Key.Hour < 0 || !DateTime.TryParse(r.Key.LocalDate, out var d)) continue;
-            totals[((int)d.DayOfWeek + 6) % 7, r.Key.Hour] += r.Counts.Gross;
+            totals[((int)d.DayOfWeek + 6) % 7, r.Key.Hour] += KeysMode ? r.Counts.KeyPresses : r.Counts.Gross;
         }
         var max = Math.Max(1, totals.Cast<long>().Max()); var left = Theme.P(40); var top = Theme.P(36);
         var cell = Math.Max(4, (Width - left - Theme.P(12)) / 24f); var ch = Math.Max(Theme.P(18), Math.Min(Theme.P(40), (Height - Theme.P(70)) / 7f));
