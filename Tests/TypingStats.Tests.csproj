@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Core/TypingStats.Core.csproj" />
+    <ProjectReference Include="../Storage/TypingStats.Storage.csproj" />
+  </ItemGroup>
+</Project>
