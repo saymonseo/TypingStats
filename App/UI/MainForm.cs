@@ -12,6 +12,7 @@ internal sealed class MainForm : Form
 {
     private readonly Collector collector;
     private readonly UpdateCoordinator updates;
+    private readonly ThemeSelectionMenu themeMenu;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private readonly ComboBox period = new ThemedComboBox() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 125 };
     private readonly DateTimePicker start = new() { Format = DateTimePickerFormat.Short, Width = 145 };
@@ -48,6 +49,11 @@ internal sealed class MainForm : Form
     public MainForm(Collector collector, UpdateCoordinator updates)
     {
         this.collector = collector; this.updates = updates; Icon = AppIcons.Application; Theme.Window(this);
+        themeMenu = new ThemeSelectionMenu(() => collector.Settings.Theme, preference =>
+        {
+            try { collector.Settings.Theme = preference; collector.Settings.Save(); Theme.Set(preference); }
+            catch (Exception e) { ShowError(e); }
+        });
         Text = "TypingStats — статистика набора"; StartPosition = FormStartPosition.CenterScreen;
         var workArea = Screen.PrimaryScreen!.WorkingArea;
         Size = new Size(Math.Min(Theme.P(1180), workArea.Width - Theme.P(36)), Math.Min(Theme.P(810), workArea.Height - Theme.P(36)));
@@ -58,7 +64,7 @@ internal sealed class MainForm : Form
         var brand = Theme.Label("TypingStats", 19, Color.White, true); brand.Location = new Point(Theme.P(48), Theme.P(5)); brand.Size = new Size(Theme.P(126), Theme.P(38));
         var tagline = Theme.Label("ЛОКАЛЬНАЯ СТАТИСТИКА", 9, Color.FromArgb(145, 165, 191)); tagline.Location = new Point(Theme.P(8), Theme.P(53)); tagline.Size = new Size(Theme.P(166), Theme.P(20));
         branding.Controls.AddRange([mark, brand, tagline]); side.Controls.Add(branding);
-        var sideFooter = Theme.Label("0.5.0  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
+        var sideFooter = Theme.Label(GitHubUpdates.Current.ToString(3) + "  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, Theme.P(8), 0, 0) }; side.Controls.Add(nav); nav.BringToFront();
         var shell = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page }; Controls.Add(shell); Controls.Add(side);
         shell.Controls.Add(state);
@@ -134,16 +140,7 @@ internal sealed class MainForm : Form
         Theme.Changed += ApplyTheme; ApplyTheme();
     }
     private void ApplyTheme() { if (IsDisposed) return; Theme.Apply(this); foreach(var page in pages) Theme.Apply(page); foreach(var grid in new[]{apps,sessions,profiles,keyGrid})Theme.Table(grid); }
-    private void ThemeMenu()
-    {
-        var menu = new ContextMenuStrip(); Theme.Menu(menu);
-        foreach (var (preference, caption) in new[] { (AppTheme.Light, "Светлая"), (AppTheme.Dark, "Тёмная"), (AppTheme.System, "Как в Windows") })
-        {
-            var item = new ToolStripMenuItem(caption) { Checked = collector.Settings.Theme == preference };
-            item.Click += (_, _) => { try { collector.Settings.Theme = preference; collector.Settings.Save(); Theme.Set(preference); } catch(Exception e) { ShowError(e); } }; menu.Items.Add(item);
-        }
-        menu.Closed += (_, _) => menu.Dispose(); menu.Show(Cursor.Position);
-    }
+    private void ThemeMenu() => themeMenu.Show(Cursor.Position);
     private static DataGridView Grid() => new()
     {
         Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
@@ -265,8 +262,47 @@ internal sealed class MainForm : Form
         }
         finally { fittingMetrics.Remove(label); }
     }
+    private void VerifyThemeMenu(string folder)
+    {
+        var original = collector.Settings.Theme;
+        var before = Counters.Sum(collector.Read("2000-01-01", "9999-12-31", 2).Select(r => r.Counts));
+        var mouseBefore = collector.ReadMouse("2000-01-01", "9999-12-31").Sum(r => r.Presses);
+        var wasPaused = collector.Paused; var reproduced = false; var selections = 0; var cancellations = 0;
+        try
+        {
+            // Reproduce the old ownership bug instead of suppressing ObjectDisposedException globally.
+            Theme.Set(AppTheme.Light);
+            using (var legacy = new ThemeSelectionMenu(() => original, Theme.Set))
+            {
+                legacy.Closed += (_, _) => legacy.Dispose();
+                legacy.Show(this, new Point(Theme.P(210), Theme.P(80)));
+                try { legacy.VerifyMouseSelect(AppTheme.Dark); }
+                catch (ObjectDisposedException) when (legacy.IsDisposed) { reproduced = true; }
+            }
+            if (!reproduced) throw new InvalidOperationException("Legacy dropdown disposal bug was not reproduced.");
+            for (var cycle = 0; cycle < 8; cycle++)
+                foreach (var preference in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.System })
+                {
+                    themeMenu.Show(this, new Point(Theme.P(210), Theme.P(80)));
+                    themeMenu.VerifyMouseSelect(preference);
+                    if (themeMenu.IsDisposed || themeMenu.Visible || collector.Settings.Theme != preference || Theme.Preference != preference
+                        || Settings.Load(collector.Settings.DataDirectory).Theme != preference)
+                        throw new InvalidOperationException("Theme selection / menu reuse / saved preference mismatch.");
+                    selections++;
+                }
+            for (var cycle = 0; cycle < 3; cycle++)
+            { themeMenu.Show(this, new Point(Theme.P(210), Theme.P(80))); themeMenu.Close(); if(themeMenu.IsDisposed)throw new InvalidOperationException("Canceled popup was disposed.");cancellations++; }
+            var after = Counters.Sum(collector.Read("2000-01-01", "9999-12-31", 2).Select(r => r.Counts));
+            if (before.KeyPresses != after.KeyPresses || before.Gross != after.Gross || mouseBefore != collector.ReadMouse("2000-01-01", "9999-12-31").Sum(r => r.Presses) || wasPaused != collector.Paused)
+                throw new InvalidOperationException("Menu verification changed input history or pause state.");
+            File.WriteAllText(Path.Combine(folder, "theme-menu-verification.json"), System.Text.Json.JsonSerializer.Serialize(new
+            { Passed=true, LegacyBugReproduced=reproduced, MouseHandlerSelections=selections, CanceledClosures=cancellations, SettingsReloadVerified=true, HistoryUnchanged=true }));
+        }
+        finally { if(themeMenu.Visible)themeMenu.Close();collector.Settings.Theme=original;collector.Settings.Save();Theme.Set(original); }
+    }
     public void RenderVerificationTabs(string folder)
     {
+        if (Environment.GetCommandLineArgs().Contains("--verify")) VerifyThemeMenu(folder);
         File.WriteAllText(Path.Combine(folder, "metric-layout.json"), System.Text.Json.JsonSerializer.Serialize(values.Select(v => new { v.Text, Width = v.Width, Height = v.Height, FontSize = v.Font.Size, Unit = v.Font.Unit.ToString(), ParentWidth = v.Parent?.Width }).ToArray()));
         var selected = selectedPage;
         for (var i = 0; i < pages.Count; i++)
@@ -354,5 +390,5 @@ internal sealed class MainForm : Form
         if (form.ShowDialog(this) == DialogResult.OK) try { collector.Store.SetCategory(app, box.Text.Trim()); RefreshData(); } catch (Exception e) { ShowError(e); }
     }
     private void ShowError(Exception e) => MessageBox.Show(this, e.Message, "TypingStats", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-    protected override void Dispose(bool disposing) { if (disposing) { Theme.Changed -= ApplyTheme; timer.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if (disposing) { Theme.Changed -= ApplyTheme; themeMenu?.Dispose(); timer.Dispose(); } base.Dispose(disposing); }
 }
