@@ -41,6 +41,7 @@ public sealed class StatsStore : IDisposable
             CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, started TEXT NOT NULL, ended TEXT NOT NULL,
               gross INTEGER NOT NULL, active INTEGER NOT NULL, reason TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS applications(app TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'Прочее');
+            CREATE TABLE IF NOT EXISTS application_names(id TEXT PRIMARY KEY,name TEXT NOT NULL,exe TEXT NOT NULL,fingerprint TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS key_counts(local_date TEXT NOT NULL, app TEXT NOT NULL, profile TEXT NOT NULL,
               keycode TEXT NOT NULL, label TEXT NOT NULL, presses INTEGER NOT NULL, repeats INTEGER NOT NULL, injected INTEGER NOT NULL,
               PRIMARY KEY(local_date,app,profile,keycode));
@@ -151,6 +152,27 @@ public sealed class StatsStore : IDisposable
         {
             using var c = db.CreateCommand(); c.CommandText = "SELECT app,category FROM applications";
             using var r = c.ExecuteReader(); var d = new Dictionary<string, string>(); while (r.Read()) d[r.GetString(0)] = r.GetString(1); return d;
+        }
+    }
+    public ApplicationIdentity RegisterApplication(string executable, string name, string fingerprint)
+    {
+        lock (gate)
+        {
+            var id = executable.ToLowerInvariant();
+            using var check = db.CreateCommand(); check.CommandText = "SELECT fingerprint FROM application_names WHERE id=$id"; check.Parameters.AddWithValue("$id", id);
+            var previous = check.ExecuteScalar() as string;
+            if (!string.IsNullOrEmpty(previous) && !string.IsNullOrEmpty(fingerprint) && previous != fingerprint) id += "@" + fingerprint[..12];
+            using var c = db.CreateCommand(); c.CommandText = "INSERT INTO application_names VALUES($id,$name,$exe,$hash) ON CONFLICT(id) DO UPDATE SET name=CASE WHEN excluded.name=excluded.exe AND application_names.name<>application_names.exe THEN application_names.name ELSE excluded.name END,exe=excluded.exe,fingerprint=CASE WHEN excluded.fingerprint='' THEN application_names.fingerprint ELSE excluded.fingerprint END";
+            c.Parameters.AddWithValue("$id",id); c.Parameters.AddWithValue("$name",name); c.Parameters.AddWithValue("$exe",executable); c.Parameters.AddWithValue("$hash",fingerprint); c.ExecuteNonQuery();
+            return new ApplicationIdentity(id,name,executable,fingerprint);
+        }
+    }
+    public Dictionary<string,ApplicationIdentity> ApplicationNames()
+    {
+        lock (gate)
+        {
+            using var c=db.CreateCommand();c.CommandText="SELECT * FROM application_names";using var r=c.ExecuteReader();var result=new Dictionary<string,ApplicationIdentity>(StringComparer.OrdinalIgnoreCase);
+            while(r.Read()) result[r.GetString(0)]=new ApplicationIdentity(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3));return result;
         }
     }
     public void SetCategory(string app, string category)

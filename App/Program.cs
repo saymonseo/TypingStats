@@ -34,6 +34,9 @@ internal static class Program
             using var collector = new Collector(settings, store);
             if (args.Contains("--verify")) collector.VerifyPipeline().GetAwaiter().GetResult();
             using var host = new TrayHost(collector, args.Contains("--minimized") || settings.StartMinimized, smoke, args.Contains("--benchmark"));
+            var readyIndex = Array.IndexOf(args, "--update-ready");
+            if (readyIndex >= 0 && readyIndex + 1 < args.Length && args[readyIndex + 1].StartsWith("Local\\TypingStatsUpdateReady-", StringComparison.Ordinal))
+                try { using var ready = EventWaitHandle.OpenExisting(args[readyIndex + 1]); ready.Set(); } catch (WaitHandleCannotBeOpenedException) { }
             Application.Run(host);
         }
         catch (Exception e)

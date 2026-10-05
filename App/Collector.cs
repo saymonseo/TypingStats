@@ -22,7 +22,7 @@ public sealed class Collector : IDisposable
     private readonly Thread worker;
     private readonly CompositionObserver observer;
     private readonly KeyboardCapture keyboard;
-    private readonly Dictionary<uint, (string Name, long Checked)> apps = new();
+    private readonly ApplicationResolver appResolver;
     private readonly Dictionary<string, (InputContext Context, long LastKey, bool Active, bool Ime)> compositions = new();
     private InputContext current = new("unknown", "unknown", "unknown");
     private volatile bool paused, running = true;
@@ -41,6 +41,7 @@ public sealed class Collector : IDisposable
     public Collector(Settings settings, StatsStore store)
     {
         this.settings = settings; this.store = store; appliedMode = settings.Mode;
+        appResolver=new ApplicationResolver(store);
         if (File.Exists(RecoveryPath))
         {
             var recovered = JsonSerializer.Deserialize<List<FlushBatch>>(File.ReadAllText(RecoveryPath)) ?? [];
@@ -114,14 +115,6 @@ public sealed class Collector : IDisposable
             if (retries.Count > 0) File.WriteAllText(RecoveryPath, JsonSerializer.Serialize(retries));
         }
     }
-    private string AppName(uint pid)
-    {
-        if (apps.TryGetValue(pid, out var cached) && Environment.TickCount64 - cached.Checked < 10000) return cached.Name;
-        string name;
-        try { using var process = Process.GetProcessById((int)pid); name = process.ProcessName.ToLowerInvariant() + ".exe"; }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { name = "unknown"; }
-        if (apps.Count > 256) apps.Clear(); apps[pid] = (name, Environment.TickCount64); return name;
-    }
     private static string Profile(nint layout)
     {
         var id = (int)((long)layout & 0xffff);
@@ -132,7 +125,7 @@ public sealed class Collector : IDisposable
     {
         var s = item.Sample; var focus = item.Focus;
         var token = focus?.Pid == s.Pid ? focus.Token : s.Pid + ":hwnd:" + s.Focus;
-        current = new InputContext(AppName(s.Pid), Profile(s.Layout), token);
+        current = new InputContext(appResolver.Resolve(s.Pid,s.Utc), Profile(s.Layout), token);
         engine.Key(current, s.Utc, s.Mono, s.Repeat, s.Injected);
         if (KeyIdentity.CountPress(settings.Mode, s.Repeat, s.Injected, settings.CountRepeats, settings.CountInjected))
             engine.KeyPress(current, s.Utc, s.Mono, KeyIdentity.Code(s.Scan, s.Extended, s.Key), KeyIdentity.Label(s.Scan, s.Extended, s.Key), s.Repeat, s.Injected);
@@ -200,7 +193,7 @@ public sealed class Collector : IDisposable
         if (settings.Mode == TrackingMode.Keys || !settings.EnableCompositionResults) return;
         if (!compositions.TryGetValue(sample.Token, out var entry))
         {
-            if (sample.Finished) engine.Unresolved(new InputContext(AppName((uint)sample.Pid), "UIA / unknown", sample.Token), sample.Utc);
+            if (sample.Finished) engine.Unresolved(new InputContext(appResolver.Resolve((uint)sample.Pid,sample.Utc), "UIA / unknown", sample.Token), sample.Utc);
             return;
         }
         if (sample.Mono < entry.LastKey || sample.Mono - entry.LastKey > 60000) return;
@@ -337,6 +330,6 @@ public sealed class Collector : IDisposable
     {
         paused = true; keyboard.Dispose(); observer.Dispose(); running = false;
         if (!worker.Join(5000)) throw new IOException("Не удалось завершить сохранение статистики.");
-        queue.Dispose(); store.Dispose();
+        queue.Dispose(); appResolver.Dispose(); store.Dispose();
     }
 }

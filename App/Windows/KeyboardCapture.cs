@@ -75,6 +75,7 @@ internal sealed class KeyboardCapture : IDisposable
                         var window = Native.GetForegroundWindow(); var tid = Native.GetWindowThreadProcessId(window, out var pid);
                         var gui = new Native.GuiInfo { Size = (uint)Marshal.SizeOf<Native.GuiInfo>() };
                         Native.GetGUIThreadInfo(tid, ref gui);
+                        if(gui.Focus!=0){var focusedThread=Native.GetWindowThreadProcessId(gui.Focus,out var focusPid);if(focusPid!=0){pid=focusPid;if(focusedThread!=0)tid=focusedThread;}}
                         receive(new KeyboardSample(k.Vk, k.Scan, (byte[])state.Clone(), repeat, injected, pid,
                             gui.Focus != 0 ? gui.Focus : window, Native.GetKeyboardLayout(tid), DateTimeOffset.UtcNow, Environment.TickCount64, (k.Flags & 1) != 0));
                     }

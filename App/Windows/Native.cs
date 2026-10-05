@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace TypingStats.App.Windows;
 
@@ -26,6 +27,9 @@ internal static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int ToUnicodeEx(uint vk, uint scan, byte[] state, [Out] char[] output, int size, uint flags, nint layout);
     [DllImport("imm32.dll")] internal static extern bool ImmIsIME(nint layout);
     [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll",SetLastError=true)] internal static extern nint OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] internal static extern bool QueryFullProcessImageName(nint process,uint flags,StringBuilder path,ref uint length);
+    [DllImport("kernel32.dll")] internal static extern bool CloseHandle(nint handle);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] internal static extern nint GetModuleHandle(string? name);
     [DllImport("user32.dll")] internal static extern int GetMessage(out Message msg, nint hwnd, uint min, uint max);
     [DllImport("user32.dll")] internal static extern bool TranslateMessage(ref Message msg);

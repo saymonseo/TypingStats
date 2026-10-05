@@ -3,6 +3,9 @@ using System.Text;
 using TypingStats.Core;
 using TypingStats.Storage;
 using Microsoft.Data.Sqlite;
+using System.IO.Compression;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 var passed = 0;
 void Test(string name, Action action)
@@ -178,4 +181,101 @@ Test("schema 1 migration preserves text statistics and creates backup", () =>
         Equal(0, upgraded.ReadKeys(date, date).Count); Equal(1, Directory.GetFiles(folder, "before-schema-2-*.sqlite").Length);
     }
 });
-Console.WriteLine($"TOTAL passed {passed} tests; exit code {Environment.ExitCode}");
+KeyMetricRow Stat(string day, string app, string code, string label, long presses, long repeats = 0) => new(new BucketKey(0, day, -1, 0, "", app, "test"), code, label, presses, repeats, 0);
+var statRows = new[] { Stat("2026-10-03", "game.exe", "sc:0011", "W / Ц", 7, 2), Stat("2026-10-03", "game.exe", "sc:001D", "Left Ctrl", 2),
+    Stat("2026-10-04", "game.exe", "sc:0039", "Space", 5), Stat("2026-10-04", "word.exe", "sc:001E", "A / Ф", 4),
+    Stat("2026-10-05", "word.exe", "sc:0011", "W / Ц", 2), Stat("2026-10-05", "game.exe", "sc:0011", "W / Ц", 3), Stat("2026-10-05", "word.exe", "sc:E05B", "Left Win", 1) };
+var range = new StatisticsFilter(new DateOnly(2026, 10, 3), new DateOnly(2026, 10, 5));
+Test("statistics inclusive dates, daily totals and key breakdown", () =>
+{
+    var report = KeyStatistics.Build(statRows, range); Equal(24L, report.Presses); Equal(5, report.DistinctKeys); Equal(3, report.DataDays); Equal(2, report.Applications);
+    Equal(24L, report.Days.Sum(d => d.Presses)); Equal(12L, report.Breakdown().Single(k => k.Code == "sc:0011").Presses);
+    Equal(9L, report.Breakdown(new DateOnly(2026,10,4)).Sum(k => k.Presses));
+});
+Test("statistics application, category, Latin/Cyrillic exact letter filters", () =>
+{
+    Equal(17L, KeyStatistics.Build(statRows, range with { Application = "GAME.EXE" }).Presses);
+    Equal(3L, KeyStatistics.Build(statRows, range with { Group = KeyGroup.Modifiers }).Presses);
+    Equal(12L, KeyStatistics.Build(statRows, range with { Search = "w" }).Presses); // W must not also match Win.
+    Equal(12L, KeyStatistics.Build(statRows, range with { Search = "ц" }).Presses);
+    Equal(5L, KeyStatistics.Build(statRows, range with { Search = "пробел" }).Presses);
+    Equal(10L, KeyStatistics.Build(statRows, range with { Application = "game.exe", Group = KeyGroup.Letters }).Presses);
+});
+Test("empty days and no matching records remain explicit", () =>
+{
+    var r = KeyStatistics.Build(statRows, range with { From = new(2026,10,2), To = new(2026,10,6), IncludeEmptyDays = true });
+    Equal(5, r.Days.Count); Equal(3, r.DataDays); Equal(24L, r.Days.Sum(d => d.Presses)); Equal(0L, r.Days.First().Presses);
+    Equal(0L, KeyStatistics.Build(statRows, range with { Search = "missing-key" }).Presses);
+    try { KeyStatistics.Build(statRows, range with { From = new(2026,10,6) }); throw new Exception("Invalid dates accepted"); } catch (ArgumentException) { }
+});
+Test("CSV period scope differs from selected day and respects filters", () =>
+{
+    var r = KeyStatistics.Build(statRows, range with { Application = "game.exe" });
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-csv-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+    StatisticsCsv.Write(r, Path.Combine(folder, "period.csv"), StatisticsExport.Detailed);
+    StatisticsCsv.Write(r, Path.Combine(folder, "day.csv"), StatisticsExport.Detailed, new DateOnly(2026,10,4));
+    var all = File.ReadAllText(Path.Combine(folder, "period.csv")); var day = File.ReadAllText(Path.Combine(folder, "day.csv"));
+    Equal(true, all.Contains("2026-10-03")); Equal(false, all.Contains("word.exe")); Equal(false, day.Contains("2026-10-03")); Equal(true, day.Contains("Space"));
+    StatisticsCsv.Write(r, Path.Combine(folder,"daily.csv"), StatisticsExport.Daily); Equal(4, File.ReadAllLines(Path.Combine(folder,"daily.csv")).Length);
+    StatisticsCsv.Write(r, Path.Combine(folder,"keys.csv"), StatisticsExport.Keys); Equal(true, File.ReadAllText(Path.Combine(folder,"keys.csv")).Contains("58.82"));
+});
+Test("CSV quotes data, protects formulas and merges pending day rows", () =>
+{
+    var rows = new[] { Stat("2026-10-03", " =HYPERLINK(\"x\")", "sc:001E", "=", 1), Stat("2026-10-03", " =HYPERLINK(\"x\")", "sc:001E", "=", 2) };
+    var r = KeyStatistics.Build(rows, range); var text = StatisticsCsv.Render(r, r.Rows, StatisticsExport.Detailed);
+    Equal(3L, r.Presses); Equal(true, text.Contains("' =HYPERLINK")); Equal(true, text.Contains("\"'=\"")); Equal(2, text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+});
+string Releases(params object[] releases) => JsonSerializer.Serialize(releases);
+object Release(string tag, bool preview = false, bool draft = false, string? hash = null, string? host = null) => new { tag_name = tag, draft, prerelease = preview,
+    assets = new[] { new { name = "TypingStats-win-x64-" + tag + ".zip", state = "uploaded", size = 1234L, digest = "sha256:" + (hash ?? new string('a',64)), browser_download_url = "https://" + (host ?? "github.com") + "/saymonseo/TypingStats/releases/download/" + tag + "/TypingStats-win-x64-" + tag + ".zip" } } };
+Test("GitHub update selection compares numeric versions and preview policy", () =>
+{
+    var json = Releases(Release("v0.9.0"), Release("v0.10.0",true), Release("v9.0.0",draft:true));
+    Equal(new Version(0,10,0,0), UpdatePackage.SelectRelease(json,new Version(0,3,0))!.Version);
+    Equal(new Version(0,9,0,0), UpdatePackage.SelectRelease(json,new Version(0,3,0),false)!.Version);
+    Equal(null, UpdatePackage.SelectRelease(Releases(Release("v0.3.0")),new Version(0,3,0,0)));
+});
+Test("GitHub update requires expected owner HTTPS URL and SHA256", () =>
+{
+    Equal(null, UpdatePackage.SelectRelease(Releases(Release("v0.4.0",host:"evil.example")),new Version(0,3,0)));
+    Equal(null, UpdatePackage.SelectRelease(Releases(Release("v0.4.0",hash:"bad")),new Version(0,3,0)));
+    var file = Path.Combine(Path.GetTempPath(),"TypingStats-hash-" + Guid.NewGuid().ToString("N")); File.WriteAllText(file,"known-content");
+    var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))); UpdatePackage.VerifyHash(file,hash);
+    try { UpdatePackage.VerifyHash(file,new string('0',64)); throw new Exception("Corrupt update accepted"); } catch(InvalidDataException) { }
+});
+Test("package rejects traversal, private data and absolute paths", () =>
+{
+    foreach(var name in new[] { "../bad.exe", "C:/bad.exe", "data/stats.sqlite", "portable.flag", "settings.json", "backups/history.sqlite" })
+        try { UpdatePackage.SafeRelative(name); throw new Exception("Unsafe path accepted: " + name); } catch(InvalidDataException) { }
+    Equal(Path.Combine("docs","readme.md"),UpdatePackage.SafeRelative("docs/readme.md"));
+});
+Test("ZIP validates all entries before extraction", () =>
+{
+    var folder=Path.Combine(Path.GetTempPath(),"TypingStats-package-" + Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+    var zip=Path.Combine(folder,"package.zip");
+    using(var z=ZipFile.Open(zip,ZipArchiveMode.Create)) foreach(var name in new[]{"TypingStats.exe","TypingStats.dll","TypingStats.runtimeconfig.json","TypingStats.Updater.exe","TypingStats.Updater.dll","e_sqlite3.dll"})
+        { using var w=new StreamWriter(z.CreateEntry("TypingStats-win-x64/"+name).Open());w.Write("fixture"); }
+    Equal(6,UpdatePackage.Extract(zip,Path.Combine(folder,"valid")).Count);
+    using(var z=ZipFile.Open(zip,ZipArchiveMode.Update)){using var w=new StreamWriter(z.CreateEntry("TypingStats-win-x64/../outside.txt").Open());w.Write("bad");}
+    try{UpdatePackage.Extract(zip,Path.Combine(folder,"invalid"));throw new Exception("Traversal accepted");}catch(InvalidDataException){}
+    Equal(false,File.Exists(Path.Combine(folder,"outside.txt")));
+});
+Test("program transaction preserves portable data and can rollback", () =>
+{
+    var root=Path.Combine(Path.GetTempPath(),"TypingStats-update-"+Guid.NewGuid().ToString("N"));var src=Path.Combine(root,"new");var dst=Path.Combine(root,"app");
+    Directory.CreateDirectory(src);Directory.CreateDirectory(Path.Combine(dst,"data"));File.WriteAllText(Path.Combine(src,"TypingStats.exe"),"new");File.WriteAllText(Path.Combine(src,"extra.dll"),"extra");
+    File.WriteAllText(Path.Combine(dst,"TypingStats.exe"),"old");File.WriteAllText(Path.Combine(dst,"portable.flag"),"");File.WriteAllText(Path.Combine(dst,"data","stats.sqlite"),"history");
+    var tx=new UpdateTransaction(src,dst,Path.Combine(root,"rollback"));tx.Apply();Equal("new",File.ReadAllText(Path.Combine(dst,"TypingStats.exe")));Equal("history",File.ReadAllText(Path.Combine(dst,"data","stats.sqlite")));
+    tx.Rollback();Equal("old",File.ReadAllText(Path.Combine(dst,"TypingStats.exe")));Equal(false,File.Exists(Path.Combine(dst,"extra.dll")));Equal(true,File.Exists(Path.Combine(dst,"portable.flag")));
+});
+Test("application identity distinguishes same executable in separate images",()=>
+{
+    var folder=Path.Combine(Path.GetTempPath(),"TypingStats-appnames-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
+    using var store=new StatsStore(Path.Combine(folder,"stats.sqlite"));
+    var first=store.RegisterApplication("host.exe","First App",new string('a',64));var second=store.RegisterApplication("host.exe","Second App",new string('b',64));
+    Equal("host.exe",first.Id);Equal(false,first.Id==second.Id);Equal(second.Id,store.RegisterApplication("host.exe","Second App",new string('b',64)).Id);
+    store.RegisterApplication("host.exe","host.exe","");Equal("First App",store.ApplicationNames()[first.Id].Name);
+    var report=KeyStatistics.Build(new[]{Stat("2026-10-03",first.Id,"sc:0011","W",4),Stat("2026-10-03",second.Id,"sc:0011","W",6)},range with{Application=second.Id});Equal(6L,report.Presses);
+    var csv=StatisticsCsv.Render(report,report.Rows,StatisticsExport.Detailed,applications:store.ApplicationNames());Equal(true,csv.Contains("Second App"));Equal(false,csv.Contains("First App"));
+});
+Console.WriteLine($"FINAL passed {passed} tests; exit code {Environment.ExitCode}");

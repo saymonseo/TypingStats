@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><AssemblyName>TypingStats.Updater</AssemblyName><Version>0.3.0</Version></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Storage/TypingStats.Storage.csproj" /></ItemGroup>
+</Project>

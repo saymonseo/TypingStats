@@ -2,6 +2,9 @@
 **/obj/
 **/data/
 **/backups/
+/updates/
+job.json
+result.json
 artifacts/
 .vs/
 .idea/

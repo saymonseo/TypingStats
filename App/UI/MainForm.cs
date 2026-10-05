@@ -20,6 +20,8 @@ internal sealed class MainForm : Form
     private readonly ComboBox modePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Width = Theme.P(172), Font = Theme.Font() };
     private readonly KeyboardMap keyboardMap = new() { Dock = DockStyle.Top, Height = Theme.P(232) };
     private readonly DataGridView keyGrid = Grid();
+    private readonly StatisticsPage statistics = new();
+    private TableLayoutPanel? cardsHost;
     private IReadOnlyList<KeyMetricRow> keyRows = [];
     private readonly HistoryChart chart = new() { Dock = DockStyle.Fill };
     private readonly Heatmap heatmap = new() { Dock = DockStyle.Fill };
@@ -53,7 +55,7 @@ internal sealed class MainForm : Form
         var brand = Theme.Label("TypingStats", 19, Color.White, true); brand.Location = new Point(Theme.P(48), Theme.P(5)); brand.Size = new Size(Theme.P(126), Theme.P(38));
         var tagline = Theme.Label("ЛОКАЛЬНАЯ СТАТИСТИКА", 9, Color.FromArgb(145, 165, 191)); tagline.Location = new Point(Theme.P(8), Theme.P(53)); tagline.Size = new Size(Theme.P(166), Theme.P(20));
         branding.Controls.AddRange([mark, brand, tagline]); side.Controls.Add(branding);
-        var sideFooter = Theme.Label("0.2.0  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
+        var sideFooter = Theme.Label("0.3.0  /  Windows\nДанные на этом компьютере", 10, Color.FromArgb(156, 175, 199)); sideFooter.Dock = DockStyle.Bottom; sideFooter.Height = Theme.P(52); sideFooter.Padding = new Padding(Theme.P(8), 0, 0, 0); side.Controls.Add(sideFooter);
         var nav = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, Theme.P(8), 0, 0) }; side.Controls.Add(nav); nav.BringToFront();
         var shell = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Page }; Controls.Add(shell); Controls.Add(side);
         shell.Controls.Add(state);
@@ -75,6 +77,7 @@ internal sealed class MainForm : Form
         AddButton(actions, "Экспорт CSV", Export);
         root.Controls.Add(actions, 0, 1);
         var cards = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4 };
+        cardsHost = cards;
         var captions = new[] { "Напечатано", "После правок ≈", "Активное время", "Символов / мин" };
         for (var i = 0; i < 4; i++)
         {
@@ -93,8 +96,8 @@ internal sealed class MainForm : Form
         appSearch.TextChanged += (_, _) => RefreshData();
         quality.Font = Theme.Font(12); quality.ForeColor = Theme.Muted; quality.BackColor = Theme.Card;
         var keyboardPage = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Card }; keyboardPage.Controls.Add(keyGrid); keyboardPage.Controls.Add(keyboardMap);
-        pages.AddRange([chart, appPanel, keyboardPage, heatmap, sessions, profiles, quality]);
-        var titles = new[] { "Обзор", "Приложения", "Клавиши", "Тепловая карта", "Сессии", "Раскладки", "Качество данных" };
+        pages.AddRange([chart, statistics, appPanel, keyboardPage, heatmap, sessions, profiles, quality]);
+        var titles = new[] { "Обзор", "Статистика", "Приложения", "Клавиши", "Тепловая карта", "Сессии", "Раскладки", "Качество данных" };
         for (var i = 0; i < titles.Length; i++)
         {
             var index = i; var button = new ModernButton { Text = titles[i], Navigation = true, Width = Theme.P(158), Height = Theme.P(42), Margin = new Padding(0, 0, 0, Theme.P(5)) };
@@ -104,7 +107,7 @@ internal sealed class MainForm : Form
         void SideAction(string label, Action action)
         { var button = new ModernButton { Text = label, Navigation = true, Width = Theme.P(158), Height = Theme.P(36), Margin = new Padding(0, 0, 0, Theme.P(4)) }; button.Click += (_, _) => action(); nav.Controls.Add(button); }
         SideAction("Настройки", () => { using var dialog = new SettingsDialog(collector.Settings); dialog.ShowDialog(this); });
-        SideAction("Резервная копия", Backup); SideAction("Другие действия", MoreMenu);
+        SideAction("Резервная копия", Backup); SideAction("Обновления", Updates); SideAction("Другие действия", MoreMenu);
         var content = new CardPanel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         var pageHeader = new Panel { Dock = DockStyle.Top, Height = Theme.P(55) };
         sectionTitle.Dock = DockStyle.Top; sectionTitle.Height = Theme.P(27); sectionHint.Dock = DockStyle.Bottom; sectionHint.Height = Theme.P(24); pageHeader.Controls.AddRange([sectionTitle, sectionHint]);
@@ -118,7 +121,8 @@ internal sealed class MainForm : Form
         };
         start.ValueChanged += (_, _) => { if (!updating) RefreshData(); }; end.ValueChanged += (_, _) => { if (!updating) RefreshData(); };
         pause.Click += async (_, _) => { try { await collector.TogglePause(); RefreshData(); } catch (Exception e) { ShowError(e); } };
-        apps.CellDoubleClick += (_, e) => { if (e.RowIndex >= 0) SetCategory(apps.Rows[e.RowIndex].Cells[0].Value?.ToString() ?? ""); };
+        apps.CellDoubleClick += (_, e) =>
+        { var code=apps.Columns.Cast<DataGridViewColumn>().FirstOrDefault(c=>c.DataPropertyName=="Код");if(e.RowIndex>=0&&code!=null)SetCategory(apps.Rows[e.RowIndex].Cells[code.Index].Value?.ToString()??""); };
         FormClosing += (_, e) => { if (!AllowExit) { e.Cancel = true; Hide(); } };
         timer.Tick += (_, _) => { if (Visible) RefreshData(); }; timer.Start(); UpdateDates();
     }
@@ -136,9 +140,11 @@ internal sealed class MainForm : Form
     private void SelectPage(int index)
     {
         selectedPage = index; pageHost.Controls.Clear(); pageHost.Controls.Add(pages[index]);
+        if (cardsHost != null) cardsHost.Visible = index != 1;
+        if (layout != null) layout.RowStyles[2].Height = index == 1 ? 0 : Theme.P(126);
         for (var i = 0; i < navigation.Count; i++) { navigation[i].Selected = i == index; navigation[i].Invalidate(); }
-        sectionTitle.Text = new[] { "Динамика активности", "Статистика по приложениям", "Какие клавиши вы нажимаете", "Ритм по дням и часам", "Сессии работы", "Профили ввода", "Качество измерений" }[index];
-        sectionHint.Text = new[] { "Показатели выбранного режима", "Двойной щелчок — назначить категорию", "Основной блок на схеме; Numpad и другие кнопки — в таблице", "Чем насыщеннее цвет, тем больше активность", "Завершённые сессии и активное время", "Раскладка не определяет язык текста", "Измеренные результаты, оценки и пропуски" }[index];
+        sectionTitle.Text = new[] { "Динамика активности", "Подробная статистика", "Статистика по приложениям", "Какие клавиши вы нажимаете", "Ритм по дням и часам", "Сессии работы", "Профили ввода", "Качество измерений" }[index];
+        sectionHint.Text = new[] { "Показатели выбранного режима", "Выберите период сверху, затем день слева — справа его клавиши", "Двойной щелчок — назначить категорию", "Основной блок на схеме; Numpad и другие кнопки — в таблице", "Чем насыщеннее цвет, тем больше активность", "Завершённые сессии и активное время", "Раскладка не определяет язык текста", "Измеренные результаты, оценки и пропуски" }[index];
         RefreshData();
     }
     private static void AddButton(FlowLayoutPanel p, string text, Action action)
@@ -158,10 +164,12 @@ internal sealed class MainForm : Form
         if (updating) return;
         try
         {
-            if (end.Value.Date < start.Value.Date) { state.Text = "Дата окончания раньше начала"; return; }
+            if (end.Value.Date < start.Value.Date) { state.Text = "Дата окончания раньше начала"; statistics.InvalidPeriod(); return; }
             var old = start.Value.Date < DateTime.Today.AddYears(-2);
             rows = collector.Read(start.Value.ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd"), old ? 2 : 1);
             keyRows = collector.ReadKeys(start.Value.ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd"));
+            var appNames=collector.Store.ApplicationNames();
+            if (selectedPage == 1) statistics.SetSource(keyRows, DateOnly.FromDateTime(start.Value), DateOnly.FromDateTime(end.Value),appNames);
             var keysMode = collector.Settings.Mode == TrackingMode.Keys;
             updating = true; modePicker.SelectedIndex = (int)collector.Settings.Mode; updating = false;
             var c = Counters.Sum(rows.Select(r => r.Counts));
@@ -184,13 +192,14 @@ internal sealed class MainForm : Form
             var keyTotal = Math.Max(1, keyRows.Sum(k => k.Presses));
             Bind(keyGrid, keyRows.GroupBy(k => k.Code).Select(g => new { Клавиша = g.First().Label, Нажатий = g.Sum(k => k.Presses), ДоляПроцентов = Math.Round(g.Sum(k => k.Presses) * 100.0 / keyTotal, 2), Автоповтор = g.Sum(k => k.Repeats), Программные = g.Sum(k => k.Injected) }).OrderByDescending(k => k.Нажатий).ToArray());
             var cats = collector.Store.Categories();
-            Bind(apps, rows.Where(r => r.Key.App.Contains(appSearch.Text, StringComparison.CurrentCultureIgnoreCase)).GroupBy(r => r.Key.App).Select(g =>
+            Bind(apps, rows.Where(r => (appNames.TryGetValue(r.Key.App,out var info)?info.Caption:r.Key.App).Contains(appSearch.Text, StringComparison.CurrentCultureIgnoreCase)).GroupBy(r => r.Key.App).Select(g =>
             {
                 var n = Counters.Sum(g.Select(r => r.Counts));
-                return new { Приложение = g.Key, Категория = cats.GetValueOrDefault(g.Key, "Прочее"), Нажатий = n.KeyPresses, Напечатано = n.Gross,
+                return new { Приложение = appNames.TryGetValue(g.Key,out var info)?info.Caption:g.Key, Код=g.Key, Категория = cats.GetValueOrDefault(g.Key, "Прочее"), Нажатий = n.KeyPresses, Напечатано = n.Gross,
                     ПослеИсправлений = n.Net, Backspace = n.Backspaces, Delete = n.Deletes, Минуты = Math.Round(n.ActiveMs / 60000.0, 1),
                     ОцененоПроцентов = n.Gross == 0 ? 0 : Math.Round(n.Estimated * 100.0 / n.Gross, 1) };
             }).OrderByDescending(x => keysMode ? x.Нажатий : x.Напечатано).ToArray());
+            foreach(DataGridViewColumn col in apps.Columns)if(col.DataPropertyName=="Код")col.Visible=false;
             Bind(profiles, rows.GroupBy(r => r.Key.Profile).Select(g => { var n = Counters.Sum(g.Select(r => r.Counts)); return new { ПрофильВвода = g.Key, Нажатий = n.KeyPresses, Напечатано = n.Gross, ПоРезультату = n.Observed, Оценено = n.Estimated, Неизвестных = n.Unresolved }; }).OrderByDescending(x => keysMode ? x.Нажатий : x.Напечатано).ToArray());
             Bind(sessions, collector.Store.Sessions().Where(s => string.CompareOrdinal(s.Start.ToLocalTime().ToString("yyyy-MM-dd"), start.Value.ToString("yyyy-MM-dd")) >= 0 && string.CompareOrdinal(s.Start.ToLocalTime().ToString("yyyy-MM-dd"), end.Value.ToString("yyyy-MM-dd")) <= 0)
                 .Select(s => new { Начало = s.Start.ToLocalTime().ToString("dd.MM HH:mm"), Окончание = s.End.ToLocalTime().ToString("HH:mm"), Нажатий = s.KeyPresses, Напечатано = s.Gross, АктивныхМинут = Math.Round((keysMode ? s.KeyActiveMs : s.ActiveMs) / 60000.0, 1), Причина = s.Reason }).ToArray());
@@ -242,20 +251,24 @@ internal sealed class MainForm : Form
         var selected = selectedPage;
         for (var i = 0; i < pages.Count; i++)
         {
-            SelectPage(i); Refresh(); using var bitmap = new Bitmap(Width, Height);
+            SelectPage(i);if(i==1)statistics.VerifyView(); Refresh(); using var bitmap = new Bitmap(Width, Height);
             DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size)); bitmap.Save(Path.Combine(folder, "tab-" + i + ".png"));
         }
         SelectPage(selected);
+        statistics.VerifyExport(folder);
         using var dialog = new SettingsDialog(collector.Settings); dialog.Show(this); dialog.PerformLayout(); dialog.Refresh();
         using var settingsBitmap = new Bitmap(dialog.Width, dialog.Height);
         dialog.DrawToBitmap(settingsBitmap, new Rectangle(Point.Empty, settingsBitmap.Size)); settingsBitmap.Save(Path.Combine(folder, "settings-ui.png"));
         dialog.Close();
+        using var updates=new UpdatesDialog(collector);updates.Show(this);updates.Refresh();
+        using var updateBitmap=new Bitmap(updates.Width,updates.Height);updates.DrawToBitmap(updateBitmap,new Rectangle(Point.Empty,updateBitmap.Size));updateBitmap.Save(Path.Combine(folder,"updates-ui.png"));updates.Close();
     }
     private void Export()
     {
+        if (selectedPage == 1) { statistics.ExportPeriod(); return; }
         using var dialog = new SaveFileDialog { Filter = "CSV (*.csv)|*.csv", FileName = "typing-stats-" + DateTime.Today.ToString("yyyy-MM-dd") + ".csv" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        try { if (selectedPage == 2) StatsStore.ExportKeys(keyRows, dialog.FileName); else StatsStore.Export(rows, dialog.FileName); MessageBox.Show(this, "Статистика экспортирована.", "TypingStats"); } catch (Exception e) { ShowError(e); }
+        try { if (selectedPage == 3) StatsStore.ExportKeys(keyRows, dialog.FileName); else StatsStore.Export(rows, dialog.FileName); MessageBox.Show(this, "Статистика экспортирована.", "TypingStats"); } catch (Exception e) { ShowError(e); }
     }
     private async void Backup()
     {
@@ -267,6 +280,7 @@ internal sealed class MainForm : Form
     {
         var menu = new ContextMenuStrip();
         Theme.Menu(menu);
+        menu.Items.Add("Проверить обновления…", null, (_, _) => Updates());
         menu.Items.Add("Сохранить сейчас", null, async (_, _) => { try { await collector.SaveNow(); } catch (Exception e) { ShowError(e); } });
         menu.Items.Add("Восстановить из копии…", null, (_, _) => Restore());
         menu.Items.Add("Удалить всю статистику…", null, (_, _) => Clear());
@@ -283,6 +297,11 @@ internal sealed class MainForm : Form
             await collector.ChangeData(s => { s.Backup(Path.Combine(collector.Settings.DataDirectory, "before-restore-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss") + ".sqlite")); s.Restore(dialog.FileName); }); RefreshData();
         }
         catch (Exception e) { ShowError(e); }
+    }
+    private void Updates()
+    {
+        using var dialog = new UpdatesDialog(collector); dialog.ShowDialog(this);
+        if (dialog.RestartRequested) ExitRequested?.Invoke();
     }
     private async void Clear()
     {
