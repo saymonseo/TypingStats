@@ -178,7 +178,7 @@ Test("schema 1 migration preserves text statistics and creates backup", () =>
     using (var upgraded = new StatsStore(path))
     {
         var date = time.ToLocalTime().ToString("yyyy-MM-dd"); Equal(3L, Counters.Sum(upgraded.Read(date, date).Select(r => r.Counts)).Gross);
-        Equal(0, upgraded.ReadKeys(date, date).Count); Equal(1, Directory.GetFiles(folder, "before-schema-2-*.sqlite").Length);
+        Equal(0, upgraded.ReadKeys(date, date).Count); Equal(1, Directory.GetFiles(folder, "before-schema-3-*.sqlite").Length);
     }
 });
 KeyMetricRow Stat(string day, string app, string code, string label, long presses, long repeats = 0) => new(new BucketKey(0, day, -1, 0, "", app, "test"), code, label, presses, repeats, 0);
@@ -277,5 +277,127 @@ Test("application identity distinguishes same executable in separate images",()=
     store.RegisterApplication("host.exe","host.exe","");Equal("First App",store.ApplicationNames()[first.Id].Name);
     var report=KeyStatistics.Build(new[]{Stat("2026-10-03",first.Id,"sc:0011","W",4),Stat("2026-10-03",second.Id,"sc:0011","W",6)},range with{Application=second.Id});Equal(6L,report.Presses);
     var csv=StatisticsCsv.Render(report,report.Rows,StatisticsExport.Detailed,applications:store.ApplicationNames());Equal(true,csv.Contains("Second App"));Equal(false,csv.Contains("First App"));
+});
+Test("mouse down messages separate all five buttons and ignore up, move, wheel", () =>
+{
+    Equal<MouseButton?>(MouseButton.Left, MouseStatistics.FromMessage(0x201, 0)); Equal<MouseButton?>(MouseButton.Right, MouseStatistics.FromMessage(0x204, 0));
+    Equal<MouseButton?>(MouseButton.Middle, MouseStatistics.FromMessage(0x207, 0)); Equal<MouseButton?>(MouseButton.X1, MouseStatistics.FromMessage(0x20b, 1u << 16));
+    Equal<MouseButton?>(MouseButton.X2, MouseStatistics.FromMessage(0x20b, 2u << 16));
+    foreach (var message in new[] { 0x200, 0x202, 0x205, 0x208, 0x20c, 0x20a, 0x20e, 0x203 }) Equal<MouseButton?>(null, MouseStatistics.FromMessage(message, 1u << 16));
+    Equal<MouseButton?>(null, MouseStatistics.FromMessage(0x20b, 3u << 16));
+});
+Test("mouse policy: independent enable and injected switches", () =>
+{
+    Equal(true, MouseStatistics.CountPress(true, false, false)); Equal(false, MouseStatistics.CountPress(false, false, true));
+    Equal(false, MouseStatistics.CountPress(true, true, false)); Equal(true, MouseStatistics.CountPress(true, true, true));
+});
+Test("mouse aggregations never add keyboard or text metrics and survive drain", () =>
+{
+    var e = new TypingEngine(); foreach (var b in Enum.GetValues<MouseButton>()) e.MousePress("game.exe", time, b);
+    e.MousePress("game.exe", time, MouseButton.Left); e.MousePress("game.exe", time, MouseButton.Left);
+    e.MousePress("browser.exe", time, MouseButton.X2, true);
+    Equal(8L, e.PeekMouse().Sum(m => m.Presses)); Equal(3L, e.PeekMouse().Single(m => m.Button == MouseButton.Left).Presses);
+    Equal(0, e.Peek().Count); Equal(0, e.PeekKeys().Count);
+    var batch = e.Drain(); Equal(8L, batch.Mouse!.Sum(m => m.Presses)); Equal(1L, batch.Mouse!.Sum(m => m.Injected)); Equal(0, batch.Sessions.Count); Equal(0, e.PeekMouse().Count);
+    var restored = JsonSerializer.Deserialize<FlushBatch>(JsonSerializer.Serialize(batch))!; Equal(8L, restored.Mouse!.Sum(m => m.Presses));
+    var legacy = JsonSerializer.Deserialize<FlushBatch>("{\"Id\":\"old\",\"Rows\":[],\"Sessions\":[],\"Keys\":[]}")!; Equal(null, legacy.Mouse);
+});
+Test("mouse dates use local midnight and separate applications", () =>
+{
+    var e = new TypingEngine(); var local = new DateTimeOffset(new DateTime(2026, 10, 3, 23, 59, 59, DateTimeKind.Local));
+    e.MousePress("one.exe", local, MouseButton.Left); e.MousePress("two.exe", local.AddSeconds(2), MouseButton.Left);
+    Equal("2026-10-03", e.PeekMouse()[0].LocalDate); Equal("2026-10-04", e.PeekMouse()[1].LocalDate); Equal(2, e.PeekMouse().Select(r => r.App).Distinct().Count());
+});
+var mouseFixture = new[] { new MouseMetricRow("2026-10-03", "game.exe", MouseButton.Left, 10, 0), new MouseMetricRow("2026-10-03", "game.exe", MouseButton.Right, 4, 0),
+    new MouseMetricRow("2026-10-04", "browser.exe", MouseButton.Middle, 3, 1), new MouseMetricRow("2026-10-05", "game.exe", MouseButton.X1, 2, 0) };
+var mouseRange = new MouseStatisticsFilter(new(2026, 10, 3), new(2026, 10, 5));
+Test("mouse report filters, day totals, button shares, zeros", () =>
+{
+    var r = MouseStatistics.Build(mouseFixture, mouseRange); Equal(19L, r.Presses); Equal(4, r.UsedButtons); Equal(3, r.DataDays); Equal(2, r.Applications); Equal(5, r.Breakdown().Count);
+    Equal(19L, r.Days.Sum(d => d.Presses)); Equal(14L, r.Breakdown(new(2026, 10, 3)).Sum(b => b.Presses)); Equal(0L, r.Breakdown().Single(b => b.Button == MouseButton.X2).Presses);
+    Equal(16L, MouseStatistics.Build(mouseFixture, mouseRange with { Application = "GAME.EXE" }).Presses);
+    Equal(3L, MouseStatistics.Build(mouseFixture, mouseRange with { Button = MouseButton.Middle }).Presses);
+    var empty = MouseStatistics.Build(mouseFixture, mouseRange with { From = new(2026, 10, 2), IncludeEmptyDays = true }); Equal(4, empty.Days.Count); Equal(3, empty.DataDays);
+    try { MouseStatistics.Build(mouseFixture, mouseRange with { From = new(2026, 10, 6) }); throw new Exception("Invalid period accepted"); } catch (ArgumentException) { }
+});
+Test("mouse CSV honors filters, dates, app names and safe cells", () =>
+{
+    var r = MouseStatistics.Build(mouseFixture, mouseRange with { Application = "game.exe" });
+    var names = new Dictionary<string, ApplicationIdentity> { ["game.exe"] = new("game.exe", "=Example,Game", "game.exe", "") };
+    var detail = MouseStatisticsCsv.Render(r, MouseStatisticsExport.Detailed, applications: names); Equal(false, detail.Contains("browser.exe")); Equal(true, detail.Contains("\"'=Example,Game\""));
+    var day = MouseStatisticsCsv.Render(r, MouseStatisticsExport.Detailed, new(2026, 10, 3)); Equal(false, day.Contains("2026-10-05"));
+    Equal(true, MouseStatisticsCsv.Render(r, MouseStatisticsExport.Buttons).Contains("62.5"));
+    Equal(true, MouseStatisticsCsv.Render(r, MouseStatisticsExport.Daily).Contains("14"));
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-mouse-csv-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder); var path = Path.Combine(folder, "mouse.csv");
+    MouseStatisticsCsv.Write(r, path, MouseStatisticsExport.Detailed); Equal(true, File.ReadAllBytes(path).Take(3).SequenceEqual(new byte[] { 239, 187, 191 }));
+    var original = File.ReadAllText(path); try { MouseStatisticsCsv.Write(r, path, MouseStatisticsExport.Detailed, new(2026, 10, 6)); } catch (ArgumentException) { }
+    Equal(original, File.ReadAllText(path));
+});
+Test("mouse SQLite atomic replay, backup, clear, restore and privacy", () =>
+{
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-mouse-db-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+    using var store = new StatsStore(Path.Combine(folder, "stats.sqlite")); var e = new TypingEngine(); e.MousePress("game.exe", time, MouseButton.Left); e.MousePress("game.exe", time, MouseButton.X2, true);
+    var batch = e.Drain(); store.Save(batch); store.Save(batch); var date = time.ToLocalTime().ToString("yyyy-MM-dd");
+    Equal(2L, store.ReadMouse(date, date).Sum(r => r.Presses)); Equal(0, store.Read(date, date).Count); Equal(0, store.ReadKeys(date, date).Count);
+    var backup = Path.Combine(folder, "backup.sqlite"); store.Backup(backup); store.Clear(); Equal(0, store.ReadMouse(date, date).Count);
+    store.Restore(backup); Equal(2L, store.ReadMouse(date, date).Sum(r => r.Presses)); Equal(1L, store.ReadMouse(date, date).Sum(r => r.Injected));
+    using var db = new SqliteConnection("Data Source=" + backup); db.Open(); using var c = db.CreateCommand(); c.CommandText = "PRAGMA table_info(mouse_counts)";
+    using var rd = c.ExecuteReader(); var columns = new List<string>(); while (rd.Read()) columns.Add(rd.GetString(1));
+    Equal("local_date,app,button,presses,injected", string.Join(",", columns));
+});
+Test("schema 2 upgrades automatically preserving keyboard, sessions, names and backup", () =>
+{
+    var folder = Path.Combine(Path.GetTempPath(), "TypingStats-mouse-migration-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder); var path = Path.Combine(folder, "stats.sqlite");
+    using (var s = new StatsStore(path))
+    {
+        var e = new TypingEngine(); e.Text(ctx, time, 1000, "old", false); e.KeyPress(ctx, time, 1000, "sc:0011", "W"); e.Stop(time, 2000, "test"); s.Save(e.Drain()); s.RegisterApplication("editor.exe", "Editor", "");
+    }
+    using (var db = new SqliteConnection("Data Source=" + path)) { db.Open(); using var c = db.CreateCommand(); c.CommandText = "DROP TABLE mouse_counts; PRAGMA user_version=2"; c.ExecuteNonQuery(); }
+    using (var s = new StatsStore(path))
+    {
+        Equal(3L, Counters.Sum(s.Read("2000-01-01", "9999-12-31", 2).Select(r => r.Counts)).Gross); Equal(1L, s.ReadKeys("2000-01-01", "9999-12-31").Sum(r => r.Presses)); Equal(1, s.Sessions().Count);
+        Equal("Editor", s.ApplicationNames()["editor.exe"].Name); Equal(0, s.ReadMouse("2000-01-01", "9999-12-31").Count);
+    }
+    Equal(1, Directory.GetFiles(folder, "before-schema-3-*.sqlite").Length);
+});
+Test("automatic update schedule respects startup, six hours, disable and clock rollback", () =>
+{
+    var startup = new DateTimeOffset(2026,10,5,12,0,0,TimeSpan.Zero);
+    Equal(false, AutomaticUpdatePolicy.CheckDue(true,startup.AddSeconds(29),startup,null));
+    Equal(true, AutomaticUpdatePolicy.CheckDue(true,startup.AddSeconds(30),startup,null));
+    Equal(false, AutomaticUpdatePolicy.CheckDue(false,startup.AddDays(1),startup,null));
+    Equal(false, AutomaticUpdatePolicy.CheckDue(true,startup.AddHours(5),startup,startup));
+    Equal(true, AutomaticUpdatePolicy.CheckDue(true,startup.AddHours(6),startup,startup));
+    Equal(true, AutomaticUpdatePolicy.CheckDue(true,startup.AddHours(1),startup,startup.AddHours(2)));
+});
+Test("automatic install requires hidden UI, no dialog, unlocked idle and healthy storage", () =>
+{
+    Equal(true, AutomaticUpdatePolicy.CanInstall(true,false,false,false,60000,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,false,false,false,59999,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,true,false,false,60000,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,false,true,false,60000,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,false,false,true,60000,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,false,false,false,60000,false));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(false,false,false,false,60000,true));
+    Equal(false, AutomaticUpdatePolicy.CanInstall(true,false,false,false,-1,true));
+});
+Test("update rollback detection rejects endless retries but clears successful attempt", () =>
+{
+    Equal(true, AutomaticUpdatePolicy.ShouldSuppress("0.6.0",new Version(0,5,0)));
+    Equal(false, AutomaticUpdatePolicy.ShouldSuppress("0.5.0",new Version(0,5,0,0)));
+    Equal(false, AutomaticUpdatePolicy.ShouldSuppress("invalid",new Version(0,5,0)));
+});
+Test("theme choices follow system only when selected and both palettes have readable text", () =>
+{
+    Equal(true, ThemePalette.IsDark(AppTheme.System,true)); Equal(false, ThemePalette.IsDark(AppTheme.System,false));
+    Equal(false, ThemePalette.IsDark(AppTheme.Light,true)); Equal(true, ThemePalette.IsDark(AppTheme.Dark,false));
+    double Luminance(System.Drawing.Color c)
+    {
+        double Linear(byte n) {var v=n/255.0;return v<=0.04045?v/12.92:Math.Pow((v+0.055)/1.055,2.4);}
+        return Linear(c.R)*.2126+Linear(c.G)*.7152+Linear(c.B)*.0722;
+    }
+    double Contrast(System.Drawing.Color a,System.Drawing.Color b){var x=Luminance(a);var y=Luminance(b);return (Math.Max(x,y)+.05)/(Math.Min(x,y)+.05);}
+    foreach(var p in new[]{ThemePalette.Light,ThemePalette.Dark})
+    {Equal(true,Contrast(p.Ink,p.Card)>=4.5);Equal(true,Contrast(p.Muted,p.Card)>=4.5);Equal(true,Contrast(p.Muted,p.Page)>=4.5);}
 });
 Console.WriteLine($"FINAL passed {passed} tests; exit code {Environment.ExitCode}");

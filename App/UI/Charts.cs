@@ -77,12 +77,12 @@ internal sealed class Heatmap : Control
             for (var hour = 0; hour < 24; hour++)
             {
                 var v = Math.Sqrt(totals[day, hour] / (double)max);
-                using var brush = new SolidBrush(Color.FromArgb((int)(237 - v * 194), (int)(242 - v * 138), (int)(249 - v * 33)));
+                using var brush = new SolidBrush(Theme.Blend(Theme.BlueSoft, Theme.Blue, v));
                 using var p = Theme.Round(new RectangleF(left + hour * cell, top + day * ch, Math.Max(1, cell - Theme.P(3)), ch - Theme.P(4)), Theme.P(3)); e.Graphics.FillPath(brush, p);
             }
         }
         e.Graphics.DrawString("Меньше", Font, ink, left, top + 7 * ch + Theme.P(12));
-        for (var i = 0; i < 5; i++) { using var b = new SolidBrush(Color.FromArgb(237 - i * 48, 242 - i * 34, 249 - i * 8)); e.Graphics.FillRectangle(b, left + Theme.P(65 + i * 16), top + 7 * ch + Theme.P(14), Theme.P(12), Theme.P(12)); }
+        for (var i = 0; i < 5; i++) { using var b = new SolidBrush(Theme.Blend(Theme.BlueSoft, Theme.Blue, i / 4.0)); e.Graphics.FillRectangle(b, left + Theme.P(65 + i * 16), top + 7 * ch + Theme.P(14), Theme.P(12), Theme.P(12)); }
         e.Graphics.DrawString("Больше", Font, ink, left + Theme.P(155), top + 7 * ch + Theme.P(12));
     }
 }

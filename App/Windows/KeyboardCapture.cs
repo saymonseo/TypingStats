@@ -1,14 +1,16 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using TypingStats.Core;
 
 namespace TypingStats.App.Windows;
 
 public sealed record KeyboardSample(uint Key, uint Scan, byte[] State, bool Repeat, bool Injected, uint Pid, nint Focus, nint Layout, DateTimeOffset Utc, long Mono, bool Extended = false);
+public sealed record MouseSample(MouseButton Button, bool Injected, uint Pid, DateTimeOffset Utc);
 
 internal sealed class KeyboardCapture : IDisposable
 {
     private readonly Action<KeyboardSample> receive;
-    private readonly Action mouse;
+    private readonly Action<MouseSample> mouse;
     private readonly Thread thread;
     private readonly byte[] state = new byte[256];
     private readonly bool[] down = new bool[256];
@@ -17,7 +19,7 @@ internal sealed class KeyboardCapture : IDisposable
     private uint threadId;
     private nint keyboardHook, mouseHook;
     private Exception? startupError;
-    public KeyboardCapture(Action<KeyboardSample> receive, Action mouse)
+    public KeyboardCapture(Action<KeyboardSample> receive, Action<MouseSample> mouse)
     {
         this.receive = receive; this.mouse = mouse;
         keyboardProc = OnKeyboard; mouseProc = OnMouse;
@@ -33,6 +35,7 @@ internal sealed class KeyboardCapture : IDisposable
             keyboardHook = Native.SetWindowsHookEx(13, keyboardProc, Native.GetModuleHandle(null), 0);
             if (keyboardHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
             mouseHook = Native.SetWindowsHookEx(14, mouseProc, Native.GetModuleHandle(null), 0);
+            if (mouseHook == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Не удалось включить глобальный учёт мыши.");
             ready.Set();
             while (Native.GetMessage(out var msg, 0, 0, 0) > 0)
             {
@@ -86,7 +89,23 @@ internal sealed class KeyboardCapture : IDisposable
     }
     private nint OnMouse(int code, nint wp, nint lp)
     {
-        if (code >= 0 && (wp == 0x201 || wp == 0x204)) mouse();
+        if (code >= 0 && (wp == 0x201 || wp == 0x204 || wp == 0x207 || wp == 0x20b))
+        {
+            var m = Marshal.PtrToStructure<Native.Mouse>(lp);
+            if (MouseStatistics.FromMessage((int)wp, m.Data) is { } button)
+            {
+                var utc = DateTimeOffset.UtcNow;
+                var foreground = Native.GetForegroundWindow(); var tid = Native.GetWindowThreadProcessId(foreground, out _);
+                var gui = new Native.GuiInfo { Size = (uint)Marshal.SizeOf<Native.GuiInfo>() };
+                Native.GetGUIThreadInfo(tid, ref gui);
+                // Capture wins during a drag. Otherwise identify the clicked window before activation;
+                // the foreground at button-down could still be the previous app.
+                var target = gui.Capture != 0 ? gui.Capture : Native.WindowFromPoint(m.Pt);
+                if (target == 0) target = foreground;
+                Native.GetWindowThreadProcessId(target, out var pid);
+                mouse(new MouseSample(button, (m.Flags & 3) != 0, pid, utc));
+            }
+        }
         return Native.CallNextHookEx(mouseHook, code, wp, lp);
     }
     public void Dispose()

@@ -6,6 +6,8 @@ using Microsoft.Win32;
 using TypingStats.App.UI;
 using TypingStats.App.Windows;
 using TypingStats.Storage;
+using TypingStats.App.Updates;
+using TypingStats.Core;
 
 namespace TypingStats.App;
 
@@ -31,8 +33,11 @@ internal static class Program
         try
         {
             var settings = Settings.Load(data); var store = new StatsStore(Path.Combine(data, "stats.sqlite"));
+            Theme.Set(settings.Theme);
             using var collector = new Collector(settings, store);
+            if(args.Contains("--paused"))collector.SetPaused(true).GetAwaiter().GetResult();
             if (args.Contains("--verify")) collector.VerifyPipeline().GetAwaiter().GetResult();
+            if (args.Contains("--verify")) UpdateVerification.Run(collector).GetAwaiter().GetResult();
             using var host = new TrayHost(collector, args.Contains("--minimized") || settings.StartMinimized, smoke, args.Contains("--benchmark"));
             var readyIndex = Array.IndexOf(args, "--update-ready");
             if (readyIndex >= 0 && readyIndex + 1 < args.Length && args[readyIndex + 1].StartsWith("Local\\TypingStatsUpdateReady-", StringComparison.Ordinal))
@@ -55,10 +60,12 @@ internal sealed class TrayHost : ApplicationContext
     private readonly MainForm form;
     private readonly NotifyIcon tray;
     private readonly HotkeyWindow hotkey;
+    private readonly UpdateCoordinator updates;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
     private readonly bool smoke;
     private bool closing;
     private bool lockWasPaused;
+    private bool sessionLocked;
     private string? goalDay, backupDay;
     private int ticks;
     private readonly bool benchmark;
@@ -66,7 +73,7 @@ internal sealed class TrayHost : ApplicationContext
     private long benchmarkStart;
     public TrayHost(Collector collector, bool minimized, bool smoke, bool benchmark = false)
     {
-        this.collector = collector; this.smoke = smoke; this.benchmark = benchmark; form = new MainForm(collector); MainForm = form;
+        this.collector = collector; this.smoke = smoke; this.benchmark = benchmark; updates = new UpdateCoordinator(collector); form = new MainForm(collector,updates); MainForm = form;
         var menu = new ContextMenuStrip();
         Theme.Menu(menu);
         menu.Items.Add("Открыть статистику", null, (_, _) => Show());
@@ -74,6 +81,8 @@ internal sealed class TrayHost : ApplicationContext
         menu.Items.Add("Сохранить сейчас", null, async (_, _) => await Safe(collector.SaveNow()));
         menu.Items.Add("Выход", null, (_, _) => Exit());
         tray = new NotifyIcon { Icon = AppIcons.Running, Text = "TypingStats — учёт работает", ContextMenuStrip = menu, Visible = true };
+        updates.Notification += text => { if(!closing)tray.ShowBalloonTip(4000,"TypingStats — обновление",text,ToolTipIcon.Info); };
+        updates.RestartRequested += Exit;
         tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Show(); };
         form.ExitRequested += Exit;
         hotkey = new HotkeyWindow(Show, () => _ = Safe(collector.TogglePause()), collector.Settings.HotkeyVk);
@@ -93,6 +102,12 @@ internal sealed class TrayHost : ApplicationContext
     private async void Tick(object? sender, EventArgs e)
     {
         ticks++;
+        if(!smoke&&!closing)
+        {
+            if(ticks%30==0 && collector.Settings.Theme==AppTheme.System && Theme.Preference==AppTheme.System)Theme.Set(AppTheme.System);
+            _=updates.Tick(()=>AutomaticUpdatePolicy.CanInstall(collector.Settings.AutomaticUpdates,form.Visible,
+                Application.OpenForms.Cast<Form>().Any(f=>f!=form&&f.Visible),sessionLocked||Native.GetForegroundWindow()==0,Native.IdleMilliseconds(),collector.StorageError==null&&!closing));
+        }
         if (benchmark && ticks == 5)
         { using var p = System.Diagnostics.Process.GetCurrentProcess(); benchmarkCpu = p.TotalProcessorTime; benchmarkStart = Environment.TickCount64; }
         if (hotkey.Key != collector.Settings.HotkeyVk)
@@ -148,7 +163,11 @@ internal sealed class TrayHost : ApplicationContext
             {
                 var folder = Path.Combine(collector.Settings.DataDirectory, "backups"); Directory.CreateDirectory(folder);
                 await collector.ChangeData(s => { s.Backup(Path.Combine(folder, day + ".sqlite")); s.Maintain(collector.Settings.MinuteDays); });
-                foreach (var old in new DirectoryInfo(folder).GetFiles("*.sqlite").OrderByDescending(f => f.Name).Skip(7)) old.Delete();
+                // Only rotate our dated daily backups; migration/update/manual safety copies
+                // must not disappear because another routine backup ran.
+                foreach (var old in new DirectoryInfo(folder).GetFiles("*.sqlite")
+                    .Where(f=>DateOnly.TryParseExact(Path.GetFileNameWithoutExtension(f.Name),"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out _))
+                    .OrderByDescending(f => f.Name).Skip(7)) old.Delete();
             }
             catch (Exception error) { tray.ShowBalloonTip(3000, "Резервная копия не создана", error.GetType().Name, ToolTipIcon.Warning); backupDay = null; }
         }
@@ -156,19 +175,20 @@ internal sealed class TrayHost : ApplicationContext
     private void Power(object sender, PowerModeChangedEventArgs e) => _ = Safe(collector.BoundaryNow());
     private void Session(object sender, SessionSwitchEventArgs e)
     {
-        if (e.Reason == SessionSwitchReason.SessionLock) { lockWasPaused = collector.Paused; _ = Safe(collector.SetPaused(true)); }
-        else if (e.Reason == SessionSwitchReason.SessionUnlock) _ = Safe(collector.SetPaused(lockWasPaused));
+        if (e.Reason == SessionSwitchReason.SessionLock) { sessionLocked=true;lockWasPaused = collector.Paused; _ = Safe(collector.SetPaused(true)); }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock) {sessionLocked=false;_ = Safe(collector.SetPaused(lockWasPaused));}
         else _ = Safe(collector.BoundaryNow());
     }
     private async void Exit()
     {
-        if (closing) return; closing = true;
+        if (closing || updates.Installing) return; closing = true;
+        updates.Dispose();
         timer.Stop(); await Safe(collector.SetPaused(true));
         hotkey.Dispose(); tray.Visible = false; tray.Dispose();
         SystemEvents.PowerModeChanged -= Power; SystemEvents.SessionSwitch -= Session;
         form.AllowExit = true; form.Close(); ExitThread();
     }
-    protected override void Dispose(bool disposing) { if (disposing) { timer.Dispose(); hotkey.Dispose(); tray.Dispose(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if (disposing) { updates.Dispose();timer.Dispose(); hotkey.Dispose(); tray.Dispose(); } base.Dispose(disposing); }
 }
 
 internal sealed class ActivationFilter(MainForm form) : IMessageFilter

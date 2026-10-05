@@ -16,6 +16,15 @@ public sealed class Settings
     public TrackingMode Mode { get; set; } = TrackingMode.Both;
     public bool CountRepeats { get; set; } = true;
     public bool CountInjected { get; set; }
+    public bool TrackMouse { get; set; } = true;
+    public bool CountMouseInjected { get; set; }
+    public AppTheme Theme { get; set; } = AppTheme.System;
+    public bool AutomaticUpdates { get; set; } = true;
+    public bool IncludePreviewUpdates { get; set; } = true;
+    public DateTimeOffset? LastUpdateCheckUtc { get; set; }
+    public string? AutoUpdateAttemptVersion { get; set; }
+    public string? FailedAutoUpdateVersion { get; set; }
+    private readonly object saveGate = new();
     public string DataDirectory { get; }
     private string FilePath => Path.Combine(DataDirectory, "settings.json");
     public Settings(string directory) { DataDirectory = directory; }
@@ -37,6 +46,14 @@ public sealed class Settings
                 if (r.TryGetProperty("Mode", out a) && a.TryGetInt32(out var mode) && Enum.IsDefined(typeof(TrackingMode), mode)) s.Mode = (TrackingMode)mode;
                 if (r.TryGetProperty("CountRepeats", out a)) s.CountRepeats = a.GetBoolean();
                 if (r.TryGetProperty("CountInjected", out a)) s.CountInjected = a.GetBoolean();
+                if (r.TryGetProperty("TrackMouse", out a)) s.TrackMouse = a.GetBoolean();
+                if (r.TryGetProperty("CountMouseInjected", out a)) s.CountMouseInjected = a.GetBoolean();
+                if (r.TryGetProperty("Theme", out a) && a.TryGetInt32(out var theme) && Enum.IsDefined(typeof(AppTheme), theme)) s.Theme = (AppTheme)theme;
+                if (r.TryGetProperty("AutomaticUpdates", out a)) s.AutomaticUpdates = a.GetBoolean();
+                if (r.TryGetProperty("IncludePreviewUpdates", out a)) s.IncludePreviewUpdates = a.GetBoolean();
+                if (r.TryGetProperty("LastUpdateCheckUtc", out a) && a.ValueKind == JsonValueKind.String && a.TryGetDateTimeOffset(out var last)) s.LastUpdateCheckUtc = last;
+                if (r.TryGetProperty("AutoUpdateAttemptVersion", out a) && a.ValueKind == JsonValueKind.String) s.AutoUpdateAttemptVersion = a.GetString();
+                if (r.TryGetProperty("FailedAutoUpdateVersion", out a) && a.ValueKind == JsonValueKind.String) s.FailedAutoUpdateVersion = a.GetString();
             }
             catch (Exception e) when (e is JsonException or FormatException or InvalidOperationException)
             {
@@ -48,9 +65,12 @@ public sealed class Settings
     }
     public void Save()
     {
+        lock (saveGate)
+        {
         var temp = FilePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, EnableCompositionResults, HotkeyVk, Mode, CountRepeats, CountInjected }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, EnableCompositionResults, HotkeyVk, Mode, CountRepeats, CountInjected, TrackMouse, CountMouseInjected, Theme, AutomaticUpdates, IncludePreviewUpdates, LastUpdateCheckUtc, AutoUpdateAttemptVersion, FailedAutoUpdateVersion }, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temp, FilePath, true);
+        }
     }
     public static bool AutoStartEnabled()
     {

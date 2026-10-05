@@ -54,7 +54,7 @@ public sealed class Collector : IDisposable
         {
             if (paused) { Array.Clear(sample.State); return; }
             if (!queue.TryAdd(new KeyEvent(sample, observer.Focus))) { Array.Clear(sample.State); Interlocked.Increment(ref dropped); }
-        }, () => Enqueue(new Boundary()));
+        }, sample => Enqueue(sample));
         worker = new Thread(Work) { IsBackground = true, Name = "Typing engine and storage" }; worker.Start();
     }
     private void Enqueue(object value)
@@ -83,6 +83,7 @@ public sealed class Collector : IDisposable
                     else if (!paused)
                     {
                         if (item is KeyEvent key) ProcessKey(key);
+                        else if (item is MouseSample mouse) ProcessMouse(mouse);
                         else if (item is CompositionSample sample) ProcessComposition(sample);
                         else if (item is Boundary) engine.BreakSeries();
                         var lost = Interlocked.Exchange(ref dropped, 0);
@@ -211,6 +212,12 @@ public sealed class Collector : IDisposable
         engine.CommitCount(entry.Context, sample.Utc, sample.Mono, sample.Count, sample.White);
         compositions.Remove(sample.Token);
     }
+    private void ProcessMouse(MouseSample sample)
+    {
+        engine.BreakSeries();
+        if (MouseStatistics.CountPress(settings.TrackMouse, sample.Injected, settings.CountMouseInjected))
+            engine.MousePress(appResolver.Resolve(sample.Pid, sample.Utc), sample.Utc, sample.Button, sample.Injected);
+    }
     private void ResolveOutstanding()
     {
         foreach (var e in compositions.Values) if (e.Active || e.Ime) engine.Unresolved(e.Context, DateTimeOffset.UtcNow);
@@ -218,7 +225,7 @@ public sealed class Collector : IDisposable
     }
     private void Flush()
     {
-        var batch = engine.Drain(); if (batch.Rows.Count != 0 || batch.Sessions.Count != 0 || (batch.Keys?.Count ?? 0) != 0) retries.Add(batch);
+        var batch = engine.Drain(); if (batch.Rows.Count != 0 || batch.Sessions.Count != 0 || (batch.Keys?.Count ?? 0) != 0 || (batch.Mouse?.Count ?? 0) != 0) retries.Add(batch);
         try
         {
             while (retries.Count > 0) { store.Save(retries[0]); retries.RemoveAt(0); }
@@ -227,7 +234,7 @@ public sealed class Collector : IDisposable
         catch (Exception e)
         {
             Volatile.Write(ref storageError, "Не сохранено: " + e.GetType().Name);
-            if (retries.Sum(b => b.Rows.Count + (b.Keys?.Count ?? 0)) * 400L > 16 * 1024 * 1024)
+            if (retries.Sum(b => b.Rows.Count + (b.Keys?.Count ?? 0) + (b.Mouse?.Count ?? 0)) * 400L > 16 * 1024 * 1024)
             { paused = true; Volatile.Write(ref status, "Учёт остановлен: хранилище"); }
         }
     }
@@ -290,8 +297,20 @@ public sealed class Collector : IDisposable
         var keyResult = Counters.Sum(store.Read("2000-01-01","9999-12-31",2).Select(r => r.Counts));
         if (keyResult.KeyPresses != baselineKeys + 13 || keyResult.Gross != result.Gross || store.ReadKeys("2000-01-01","9999-12-31").Sum(k => k.Presses) != keyResult.KeyPresses)
             throw new InvalidOperationException("All-key mode / repeat / injected policy mismatch");
+        foreach (var button in Enum.GetValues<MouseButton>()) ProcessMouse(new MouseSample(button, false, pid, utc));
+        ProcessMouse(new MouseSample(MouseButton.Left, false, pid, utc)); ProcessMouse(new MouseSample(MouseButton.Left, false, pid, utc));
+        ProcessMouse(new MouseSample(MouseButton.Right, true, pid, utc)); // ignored by default
+        settings.CountMouseInjected = true; ProcessMouse(new MouseSample(MouseButton.X2, true, pid, utc)); settings.CountMouseInjected = false;
+        settings.TrackMouse = false; ProcessMouse(new MouseSample(MouseButton.Left, false, pid, utc)); settings.TrackMouse = true;
+        foreach (var mode in Enum.GetValues<TrackingMode>()) { settings.Mode = mode; ProcessMouse(new MouseSample(MouseButton.Middle, false, pid, utc)); }
+        settings.Mode = TrackingMode.Keys; appliedMode = TrackingMode.Keys; Flush();
+        var mouseRows = ReadMouse("2000-01-01", "9999-12-31");
+        var afterMouse = Counters.Sum(Read("2000-01-01", "9999-12-31", 2).Select(r => r.Counts));
+        if (mouseRows.Sum(r => r.Presses) != 11 || mouseRows.Sum(r => r.Injected) != 1 || mouseRows.Select(r => r.Button).Distinct().Count() != 5
+            || afterMouse.KeyPresses != keyResult.KeyPresses || afterMouse.Gross != keyResult.Gross)
+            throw new InvalidOperationException("Mouse pipeline / independent counts mismatch");
         File.WriteAllText(Path.Combine(settings.DataDirectory, "pipeline-report.json"), JsonSerializer.Serialize(new
-        { Test = "controlled metadata (not physical keyboard / live game compatibility)", Passed = true, Estimated = result.Estimated, Observed = result.Observed, Net = result.Net, Pastes = result.Pastes, KeyModePassed = true, KeyPresses = keyResult.KeyPresses, NoTextAddedInKeyMode = keyResult.Gross == result.Gross }, new JsonSerializerOptions { WriteIndented = true }));
+        { Test = "controlled metadata (not physical keyboard or mouse / live game compatibility)", Passed = true, Estimated = result.Estimated, Observed = result.Observed, Net = result.Net, Pastes = result.Pastes, KeyModePassed = true, KeyPresses = keyResult.KeyPresses, NoTextAddedInKeyMode = keyResult.Gross == result.Gross, MousePipelinePassed = true, MousePresses = mouseRows.Sum(r => r.Presses) }, new JsonSerializerOptions { WriteIndented = true }));
     });
     public Task BoundaryNow() => Invoke(() =>
     { ResolveOutstanding(); engine.Stop(DateTimeOffset.UtcNow, Environment.TickCount64, "system"); keyboard.Resync(); Flush(); });
@@ -331,5 +350,15 @@ public sealed class Collector : IDisposable
         paused = true; keyboard.Dispose(); observer.Dispose(); running = false;
         if (!worker.Join(5000)) throw new IOException("Не удалось завершить сохранение статистики.");
         queue.Dispose(); appResolver.Dispose(); store.Dispose();
+    }
+    public IReadOnlyList<MouseMetricRow> ReadMouse(string start, string end)
+    {
+        lock (viewGate)
+        {
+            var rows = store.ReadMouse(start, end).ToList();
+            rows.AddRange(retries.SelectMany(b => b.Mouse ?? []).Concat(engine.PeekMouse())
+                .Where(r => string.CompareOrdinal(r.LocalDate, start) >= 0 && string.CompareOrdinal(r.LocalDate, end) <= 0));
+            return rows;
+        }
     }
 }

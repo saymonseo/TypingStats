@@ -6,6 +6,7 @@ public sealed class TypingEngine
     private readonly Dictionary<BucketKey, Counters> pending = new();
     private readonly List<TypingSession> closedSessions = new();
     private readonly Dictionary<(BucketKey Bucket, string Code), KeyMetricRow> keyCounts = new();
+    private readonly Dictionary<(string Date, string App, MouseButton Button), MouseMetricRow> mouseCounts = new();
     private DateTimeOffset? keyCursor;
     private long keyCursorMono, keyEndMono, lastKeyMono, sessionKeyPresses, sessionKeyActive;
     private InputContext keyContext;
@@ -62,6 +63,16 @@ public sealed class TypingEngine
     }
     private void StartSession(DateTimeOffset utc)
     { if (sessionId == null) { sessionId = Guid.NewGuid().ToString("N"); sessionStart = utc; } }
+    public void MousePress(string app, DateTimeOffset utc, MouseButton button, bool injected = false)
+    {
+        if (!Enum.IsDefined(button)) throw new ArgumentOutOfRangeException(nameof(button));
+        var date = utc.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var id = (date, app, button);
+        mouseCounts[id] = mouseCounts.TryGetValue(id, out var old)
+            ? old with { Presses = old.Presses + 1, Injected = old.Injected + (injected ? 1 : 0) }
+            : new MouseMetricRow(date, app, button, 1, injected ? 1 : 0);
+        // Mouse activity never changes keyboard counters, sessions, or active time.
+    }
     public void Text(InputContext ctx, DateTimeOffset utc, long mono, ReadOnlySpan<char> fragment, bool observed)
     {
         SetContext(ctx, utc, mono); Advance(utc, mono);
@@ -167,9 +178,10 @@ public sealed class TypingEngine
     }
     public IReadOnlyList<MetricRow> Peek() => pending.Select(x => new MetricRow(x.Key, x.Value.Copy())).ToArray();
     public IReadOnlyList<KeyMetricRow> PeekKeys() => keyCounts.Values.ToArray();
+    public IReadOnlyList<MouseMetricRow> PeekMouse() => mouseCounts.Values.ToArray();
     public FlushBatch Drain()
     {
-        var batch = new FlushBatch(Guid.NewGuid().ToString("N"), Peek(), closedSessions.ToArray(), PeekKeys());
-        pending.Clear(); closedSessions.Clear(); keyCounts.Clear(); return batch;
+        var batch = new FlushBatch(Guid.NewGuid().ToString("N"), Peek(), closedSessions.ToArray(), PeekKeys(), PeekMouse());
+        pending.Clear(); closedSessions.Clear(); keyCounts.Clear(); mouseCounts.Clear(); return batch;
     }
 }

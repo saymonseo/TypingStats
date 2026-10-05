@@ -46,7 +46,7 @@ public sealed class Counters
 
 public readonly record struct BucketKey(long UtcMinute, string LocalDate, int Hour, int Offset, string Zone, string App, string Profile);
 public sealed record MetricRow(BucketKey Key, Counters Counts);
-public sealed record FlushBatch(string Id, IReadOnlyList<MetricRow> Rows, IReadOnlyList<TypingSession> Sessions, IReadOnlyList<KeyMetricRow>? Keys = null);
+public sealed record FlushBatch(string Id, IReadOnlyList<MetricRow> Rows, IReadOnlyList<TypingSession> Sessions, IReadOnlyList<KeyMetricRow>? Keys = null, IReadOnlyList<MouseMetricRow>? Mouse = null);
 public sealed record TypingSession(string Id, DateTimeOffset Start, DateTimeOffset End, long Gross, long ActiveMs, string Reason, long KeyPresses = 0, long KeyActiveMs = 0);
 public readonly record struct InputContext(string App, string Profile, string Field);
 

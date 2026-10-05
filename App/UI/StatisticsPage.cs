@@ -86,14 +86,14 @@ internal sealed class StatisticsPage : UserControl
         exportPeriod.Click += (_, _) => Export(false); exportDay.Click += (_, _) => Export(true);
         exportPeriod.Enabled = exportDay.Enabled = false;
     }
-    private static ComboBox Choice() => new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Font() };
-    private static Panel FilterBox(string title, Control input)
+    private static ComboBox Choice() => new ThemedComboBox() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Font() };
+    internal static Panel FilterBox(string title, Control input)
     {
         var box = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, Theme.P(10), Theme.P(12)), Margin = Padding.Empty };
         var label = Theme.Label(title, 10, Theme.Muted); label.Dock = DockStyle.Top; label.Height = Theme.P(22);
         var host = new Panel { Dock = DockStyle.Bottom, Height = Theme.P(33) }; host.Controls.Add(input); box.Controls.Add(host); box.Controls.Add(label); return box;
     }
-    private static DataGridView Table() => new()
+    internal static DataGridView Table() => new()
     {
         Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false,
         MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, BackgroundColor = Theme.Card, BorderStyle = BorderStyle.None,
@@ -125,6 +125,7 @@ internal sealed class StatisticsPage : UserControl
         var table = new DataTable(); table.Columns.Add("date", typeof(DateTime)); table.Columns.Add("presses", typeof(long)); table.Columns.Add("unique", typeof(int));
         foreach (var day in report.Days) table.Rows.Add(day.Date.ToDateTime(TimeOnly.MinValue), day.Presses, day.DistinctKeys);
         var oldDay = selectedDay; binding = true; days.DataSource = table.DefaultView;
+        Theme.Table(days);
         foreach (DataGridViewColumn col in days.Columns)
         { col.HeaderText = col.DataPropertyName switch { "date" => "День", "presses" => "Нажатий", _ => "Клавиш" }; col.SortMode = DataGridViewColumnSortMode.Automatic; if (col.DataPropertyName == "date") col.DefaultCellStyle.Format = "dd.MM.yyyy"; }
         if (oldDay != null && !report.Days.Any(d => d.Date == oldDay)) selectedDay = null;
@@ -149,6 +150,7 @@ internal sealed class StatisticsPage : UserControl
             table.Rows.Add(k.Label,k.Presses,k.Share,k.Repeats,string.Join(", ",labels));
         }
         keys.DataSource = table.DefaultView;
+        Theme.Table(keys);
         foreach (DataGridViewColumn col in keys.Columns)
         {
             col.HeaderText = col.DataPropertyName switch { "key" => "Клавиша", "presses" => "Нажатий", "share" => "Доля, %", "repeats" => "Повторы", _ => "Приложения" };
@@ -164,7 +166,7 @@ internal sealed class StatisticsPage : UserControl
         if (e.RowIndex < 0 || e.ColumnIndex < 0 || report == null || days.Columns[e.ColumnIndex].DataPropertyName != "presses") return;
         e.PaintBackground(e.ClipBounds, true); var max = Math.Max(1, report.Days.Select(d => d.Presses).DefaultIfEmpty(0).Max());
         var value = Convert.ToInt64(e.Value); var width = (int)((e.CellBounds.Width - Theme.P(12)) * value / (double)max);
-        if (width > 0) { using var brush = new SolidBrush(Color.FromArgb(216, 231, 252)); e.Graphics!.FillRectangle(brush, e.CellBounds.X + Theme.P(4), e.CellBounds.Y + Theme.P(8), width, e.CellBounds.Height - Theme.P(16)); }
+        if (width > 0) { using var brush = new SolidBrush(Theme.BlueSoft); e.Graphics!.FillRectangle(brush, e.CellBounds.X + Theme.P(4), e.CellBounds.Y + Theme.P(8), width, e.CellBounds.Height - Theme.P(16)); }
         e.PaintContent(e.ClipBounds); e.Handled = true;
     }
     public void ExportPeriod() => Export(false);
@@ -195,7 +197,7 @@ internal sealed class StatisticsPage : UserControl
 
 internal sealed class ExportStatisticsDialog : Form
 {
-    private readonly ComboBox format = new() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Font() };
+    private readonly ComboBox format = new ThemedComboBox() { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Font() };
     public StatisticsExport Format => (StatisticsExport)Math.Max(0, format.SelectedIndex);
     public ExportStatisticsDialog(KeyStatisticsReport report, DateOnly? day)
     {

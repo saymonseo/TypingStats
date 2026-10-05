@@ -27,9 +27,10 @@ public sealed class StatsStore : IDisposable
     {
         using var version = db.CreateCommand(); version.CommandText = "PRAGMA user_version";
         var previousVersion = Convert.ToInt32(version.ExecuteScalar());
-        if (previousVersion > 2) throw new InvalidDataException("База создана более новой версией TypingStats.");
-        if (previousVersion == 1) Backup(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "before-schema-2-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + ".sqlite"));
+        if (previousVersion > 3) throw new InvalidDataException("База создана более новой версией TypingStats.");
+        if (previousVersion is 1 or 2) Backup(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Path)!, "before-schema-3-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".sqlite"));
         var columns = string.Join(",", Fields.Select(p => $"{p.Name} INTEGER NOT NULL DEFAULT 0"));
+        using var tx = db.BeginTransaction();
         Exec($"""
             CREATE TABLE IF NOT EXISTS metrics(
               bucket INTEGER NOT NULL, resolution INTEGER NOT NULL, local_date TEXT NOT NULL,
@@ -45,23 +46,25 @@ public sealed class StatsStore : IDisposable
             CREATE TABLE IF NOT EXISTS key_counts(local_date TEXT NOT NULL, app TEXT NOT NULL, profile TEXT NOT NULL,
               keycode TEXT NOT NULL, label TEXT NOT NULL, presses INTEGER NOT NULL, repeats INTEGER NOT NULL, injected INTEGER NOT NULL,
               PRIMARY KEY(local_date,app,profile,keycode));
-            """);
-        EnsureColumn("metrics", "KeyPresses"); EnsureColumn("metrics", "KeyActiveMs");
-        EnsureColumn("sessions", "KeyPresses"); EnsureColumn("sessions", "KeyActiveMs");
-        Exec("PRAGMA user_version=2;");
+            CREATE TABLE IF NOT EXISTS mouse_counts(local_date TEXT NOT NULL, app TEXT NOT NULL, button INTEGER NOT NULL,
+              presses INTEGER NOT NULL, injected INTEGER NOT NULL, PRIMARY KEY(local_date,app,button));
+            """, tx);
+        EnsureColumn("metrics", "KeyPresses", tx); EnsureColumn("metrics", "KeyActiveMs", tx);
+        EnsureColumn("sessions", "KeyPresses", tx); EnsureColumn("sessions", "KeyActiveMs", tx);
+        Exec("PRAGMA user_version=3;", tx); tx.Commit();
     }
-    private void EnsureColumn(string table, string column)
+    private void EnsureColumn(string table, string column, SqliteTransaction tx)
     {
-        using var c = db.CreateCommand(); c.CommandText = $"PRAGMA table_info({table})";
+        using var c = db.CreateCommand(); c.Transaction = tx; c.CommandText = $"PRAGMA table_info({table})";
         using var r = c.ExecuteReader(); var exists = false;
         while (r.Read()) if (r.GetString(1) == column) exists = true;
-        r.Close(); if (!exists) Exec($"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0");
+        r.Close(); if (!exists) Exec($"ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0", tx);
     }
-    private void Exec(string sql)
-    { using var c = db.CreateCommand(); c.CommandText = sql; c.ExecuteNonQuery(); }
+    private void Exec(string sql, SqliteTransaction? tx = null)
+    { using var c = db.CreateCommand(); c.Transaction = tx; c.CommandText = sql; c.ExecuteNonQuery(); }
     public void Save(FlushBatch batch)
     {
-        if (batch.Rows.Count == 0 && batch.Sessions.Count == 0 && (batch.Keys?.Count ?? 0) == 0) return;
+        if (batch.Rows.Count == 0 && batch.Sessions.Count == 0 && (batch.Keys?.Count ?? 0) == 0 && (batch.Mouse?.Count ?? 0) == 0) return;
         lock (gate)
         {
             using var tx = db.BeginTransaction();
@@ -89,6 +92,13 @@ public sealed class StatsStore : IDisposable
                 c.Parameters.AddWithValue("$date", k.Key.LocalDate); c.Parameters.AddWithValue("$app", k.Key.App); c.Parameters.AddWithValue("$profile", k.Key.Profile);
                 c.Parameters.AddWithValue("$code", k.Code); c.Parameters.AddWithValue("$label", k.Label); c.Parameters.AddWithValue("$presses", k.Presses);
                 c.Parameters.AddWithValue("$repeats", k.Repeats); c.Parameters.AddWithValue("$injected", k.Injected); c.ExecuteNonQuery();
+            }
+            foreach (var m in batch.Mouse ?? [])
+            {
+                using var c = db.CreateCommand(); c.Transaction = tx;
+                c.CommandText = "INSERT INTO mouse_counts VALUES($date,$app,$button,$presses,$injected) ON CONFLICT DO UPDATE SET presses=presses+excluded.presses,injected=injected+excluded.injected";
+                c.Parameters.AddWithValue("$date", m.LocalDate); c.Parameters.AddWithValue("$app", m.App); c.Parameters.AddWithValue("$button", (int)m.Button);
+                c.Parameters.AddWithValue("$presses", m.Presses); c.Parameters.AddWithValue("$injected", m.Injected); c.ExecuteNonQuery();
             }
             tx.Commit();
         }
@@ -154,6 +164,17 @@ public sealed class StatsStore : IDisposable
             using var r = c.ExecuteReader(); var d = new Dictionary<string, string>(); while (r.Read()) d[r.GetString(0)] = r.GetString(1); return d;
         }
     }
+    public IReadOnlyList<MouseMetricRow> ReadMouse(string start, string end)
+    {
+        lock (gate)
+        {
+            using var c = db.CreateCommand(); c.CommandText = "SELECT local_date,app,button,presses,injected FROM mouse_counts WHERE local_date >= $start AND local_date <= $end ORDER BY local_date DESC,app,button";
+            c.Parameters.AddWithValue("$start", start); c.Parameters.AddWithValue("$end", end);
+            using var r = c.ExecuteReader(); var rows = new List<MouseMetricRow>();
+            while (r.Read()) rows.Add(new MouseMetricRow(r.GetString(0), r.GetString(1), (MouseButton)r.GetInt32(2), r.GetInt64(3), r.GetInt64(4)));
+            return rows;
+        }
+    }
     public ApplicationIdentity RegisterApplication(string executable, string name, string fingerprint)
     {
         lock (gate)
@@ -213,7 +234,7 @@ public sealed class StatsStore : IDisposable
             from.Open(); using var c = from.CreateCommand(); c.CommandText = "PRAGMA quick_check";
             if ((string?)c.ExecuteScalar() != "ok") throw new InvalidDataException("Копия повреждена.");
             c.CommandText = "PRAGMA user_version";
-            if (Convert.ToInt32(c.ExecuteScalar()) is not (1 or 2)) throw new InvalidDataException("Версия копии не поддерживается.");
+            if (Convert.ToInt32(c.ExecuteScalar()) is not (1 or 2 or 3)) throw new InvalidDataException("Версия копии не поддерживается.");
             c.CommandText = "SELECT COUNT(*) FROM metrics"; c.ExecuteScalar();
             from.BackupDatabase(db);
             InitializeSchema();
@@ -221,7 +242,7 @@ public sealed class StatsStore : IDisposable
     }
     public void Clear()
     {
-        lock (gate) Exec("BEGIN; DELETE FROM metrics; DELETE FROM sessions; DELETE FROM batches; DELETE FROM key_counts; COMMIT;");
+        lock (gate) Exec("BEGIN; DELETE FROM metrics; DELETE FROM sessions; DELETE FROM batches; DELETE FROM key_counts; DELETE FROM mouse_counts; COMMIT;");
     }
     public static void Export(IEnumerable<MetricRow> rows, string path)
     {

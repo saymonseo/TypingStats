@@ -8,6 +8,14 @@ internal static class Native
     internal delegate nint HookProc(int code, nint wParam, nint lParam);
     [StructLayout(LayoutKind.Sequential)] internal struct Kbd { public uint Vk, Scan, Flags, Time; public nuint Extra; }
     [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] internal struct Mouse { public Point Pt; public uint Data, Flags, Time; public nuint Extra; }
+    [StructLayout(LayoutKind.Sequential)] internal struct LastInput { public uint Size, Time; }
+    [DllImport("user32.dll")] internal static extern bool GetLastInputInfo(ref LastInput info);
+    internal static long IdleMilliseconds()
+    {
+        var info = new LastInput { Size = (uint)Marshal.SizeOf<LastInput>() };
+        return GetLastInputInfo(ref info) ? unchecked((uint)Environment.TickCount - info.Time) : -1;
+    }
     [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] internal struct GuiInfo
     { public uint Size, Flags; public nint Active, Focus, Capture, Menu, Move, Caret; public Rect CaretRect; }
@@ -17,6 +25,7 @@ internal static class Native
     [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool UnhookWindowsHookEx(nint hook);
     [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
     [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("user32.dll")] internal static extern nint GetKeyboardLayout(uint thread);
     [DllImport("user32.dll")] internal static extern int GetKeyboardLayoutList(int count, [Out] nint[]? layouts);

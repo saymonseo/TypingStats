@@ -36,8 +36,8 @@ internal sealed class KeyboardMap : Control
                 var strength = Math.Sqrt(value / (double)max);
                 var r = new RectangleF(x + Theme.P(2), row * unit + Theme.P(2), k.Units * unit - Theme.P(4), unit - Theme.P(4));
                 using var p = Theme.Round(r, Theme.P(5));
-                using var fill = new SolidBrush(Color.FromArgb((int)(240 - strength * 197), (int)(244 - strength * 140), (int)(251 - strength * 35))); e.Graphics.FillPath(fill, p);
-                using var pen = new Pen(value > 0 ? Color.FromArgb(160, 190, 235) : Theme.Line); e.Graphics.DrawPath(pen, p);
+                using var fill = new SolidBrush(Theme.Blend(Theme.BlueSoft, Theme.Primary, strength)); e.Graphics.FillPath(fill, p);
+                using var pen = new Pen(value > 0 ? Theme.Blue : Theme.Line); e.Graphics.DrawPath(pen, p);
                 using var ink = new SolidBrush(strength > .55 ? Color.White : Theme.Ink);
                 using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
                 e.Graphics.DrawString(k.Label, Font, ink, new RectangleF(r.X, r.Y, r.Width, r.Height * .56f), format);

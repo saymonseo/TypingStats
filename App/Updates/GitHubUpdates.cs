@@ -6,10 +6,15 @@ using TypingStats.Core;
 
 namespace TypingStats.App.Updates;
 
-internal sealed class GitHubUpdates : IDisposable
+internal interface IUpdateTransport : IDisposable
+{
+    Task<ReleaseUpdate?> Check(bool previews, CancellationToken cancellation);
+    Task<string> Download(ReleaseUpdate update, IProgress<int> progress, CancellationToken cancellation, string? dataDirectory = null);
+}
+internal sealed class GitHubUpdates : IUpdateTransport
 {
     private readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(3) };
-    public static Version Current => UpdatePackage.Normalize(Assembly.GetEntryAssembly()!.GetName().Version ?? new Version(0, 3, 0));
+    public static Version Current => UpdatePackage.Normalize(Assembly.GetEntryAssembly()!.GetName().Version ?? new Version(0, 5, 0));
     public GitHubUpdates()
     {
         http.DefaultRequestHeaders.UserAgent.ParseAdd("TypingStats/" + Current.ToString(3));
@@ -23,9 +28,9 @@ internal sealed class GitHubUpdates : IDisposable
         response.EnsureSuccessStatusCode(); var json = await response.Content.ReadAsStringAsync(cancellation);
         return UpdatePackage.SelectRelease(json, Current, previews);
     }
-    public async Task<string> Download(ReleaseUpdate update, IProgress<int> progress, CancellationToken cancellation)
+    public async Task<string> Download(ReleaseUpdate update, IProgress<int> progress, CancellationToken cancellation, string? dataDirectory = null)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TypingStats", "updates", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TypingStats"), "updates", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root); var zip = Path.Combine(root, "package.zip");
         using var response = await http.GetAsync(update.Download, HttpCompletionOption.ResponseHeadersRead, cancellation); response.EnsureSuccessStatusCode();
         await using var input = await response.Content.ReadAsStreamAsync(cancellation); await using (var output = File.Create(zip))
@@ -58,6 +63,10 @@ internal sealed class GitHubUpdates : IDisposable
         await collector.ChangeData(s => s.Backup(backup));
         var args = Environment.GetCommandLineArgs().Skip(1).ToList();
         for (var i = args.Count - 1; i >= 0; i--) if (args[i] == "--update-ready") { if (i + 1 < args.Count) args.RemoveAt(i + 1); args.RemoveAt(i); }
+        args.RemoveAll(a => a is "--paused" or "--minimized");
+        if (wasPaused) args.Add("--paused");
+        // Automatic restart must not steal focus. A manually paused collector stays paused.
+        args.Add("--minimized");
         var id = Guid.NewGuid().ToString("N"); var result = Path.Combine(root, "result.json");
         var job = new UpdateJob(id, Environment.ProcessId, staged, app, collector.Store.Path, backup, result, args.ToArray());
         var jobPath = Path.Combine(root, "job.json"); File.WriteAllText(jobPath, JsonSerializer.Serialize(job));
