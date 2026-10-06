@@ -1,6 +1,6 @@
 using System.Text.Json;
-using Microsoft.Win32;
 using TypingStats.Core;
+using TypingStats.App.Windows;
 
 namespace TypingStats.App;
 
@@ -11,6 +11,8 @@ public sealed class Settings
     public int MinuteDays { get; set; } = 90;
     public int DailyGoal { get; set; }
     public bool StartMinimized { get; set; }
+    public bool StartWithWindows { get; set; } = true;
+    public string? StartupError { get; private set; }
     public bool EnableCompositionResults { get; set; } = true;
     public int HotkeyVk { get; set; } = 0x7b;
     public TrackingMode Mode { get; set; } = TrackingMode.Both;
@@ -41,6 +43,7 @@ public sealed class Settings
                 if (r.TryGetProperty("MinuteDays", out a)) s.MinuteDays = Math.Clamp(a.GetInt32(), 1, 36500);
                 if (r.TryGetProperty("DailyGoal", out a)) s.DailyGoal = Math.Max(0, a.GetInt32());
                 if (r.TryGetProperty("StartMinimized", out a)) s.StartMinimized = a.GetBoolean();
+                if (r.TryGetProperty("StartWithWindows", out a)) s.StartWithWindows = a.GetBoolean();
                 if (r.TryGetProperty("EnableCompositionResults", out a)) s.EnableCompositionResults = a.GetBoolean();
                 if (r.TryGetProperty("HotkeyVk", out a)) s.HotkeyVk = Math.Clamp(a.GetInt32(), 0x70, 0x7b);
                 if (r.TryGetProperty("Mode", out a) && a.TryGetInt32(out var mode) && Enum.IsDefined(typeof(TrackingMode), mode)) s.Mode = (TrackingMode)mode;
@@ -68,19 +71,36 @@ public sealed class Settings
         lock (saveGate)
         {
         var temp = FilePath + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, EnableCompositionResults, HotkeyVk, Mode, CountRepeats, CountInjected, TrackMouse, CountMouseInjected, Theme, AutomaticUpdates, IncludePreviewUpdates, LastUpdateCheckUtc, AutoUpdateAttemptVersion, FailedAutoUpdateVersion }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(temp, JsonSerializer.Serialize(new { IdleSeconds, SessionSeconds, MinuteDays, DailyGoal, StartMinimized, StartWithWindows, EnableCompositionResults, HotkeyVk, Mode, CountRepeats, CountInjected, TrackMouse, CountMouseInjected, Theme, AutomaticUpdates, IncludePreviewUpdates, LastUpdateCheckUtc, AutoUpdateAttemptVersion, FailedAutoUpdateVersion }, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temp, FilePath, true);
         }
     }
-    public static bool AutoStartEnabled()
+    internal string? InitializeAutoStart(IStartupStore? store = null, string? executable = null)
     {
-        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        return key?.GetValue("TypingStats") is string;
+        try
+        {
+            Save();
+            WindowsStartup.Synchronize(StartWithWindows, executable ?? (StartWithWindows ? WindowsStartup.Executable() : ""), DataDirectory, store ?? new RegistryStartupStore());
+            StartupError = null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException)
+        { StartupError = "Не удалось применить автозапуск: " + e.Message; }
+        return StartupError;
     }
-    public static void AutoStart(bool enabled)
+    internal void SetAutoStart(bool enabled, IStartupStore? store = null, string? executable = null)
     {
-        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled) key.SetValue("TypingStats", "\"" + Environment.ProcessPath + "\" --minimized");
-        else key.DeleteValue("TypingStats", false);
+        var previous = StartWithWindows; StartWithWindows = enabled;
+        try
+        {
+            Save();
+            WindowsStartup.Synchronize(enabled, executable ?? (enabled ? WindowsStartup.Executable() : ""), DataDirectory, store ?? new RegistryStartupStore());
+            StartupError = null;
+        }
+        catch (Exception e)
+        {
+            StartWithWindows = previous; StartupError = "Не удалось применить автозапуск: " + e.Message;
+            try { Save(); } catch (Exception rollback) when (rollback is IOException or UnauthorizedAccessException or System.Security.SecurityException) { }
+            throw;
+        }
     }
 }

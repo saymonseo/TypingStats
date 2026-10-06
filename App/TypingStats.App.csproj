@@ -4,7 +4,7 @@
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>TypingStats</AssemblyName>
-    <Version>0.5.1</Version>
+    <Version>0.5.2</Version>
     <ApplicationIcon>Assets\typingstats.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>

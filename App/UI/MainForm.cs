@@ -313,6 +313,8 @@ internal sealed class MainForm : Form
         SelectPage(selected);
         statistics.VerifyExport(folder);
         using var dialog = new SettingsDialog(collector.Settings); dialog.Show(this); dialog.PerformLayout(); dialog.Refresh();
+        if(dialog.Controls.Find("StartWithWindowsToggle",true).SingleOrDefault() is not ToggleSwitch startupToggle || startupToggle.Checked!=collector.Settings.StartWithWindows)
+            throw new InvalidOperationException("Startup toggle does not reflect saved preference.");
         using var settingsBitmap = new Bitmap(dialog.Width, dialog.Height);
         dialog.DrawToBitmap(settingsBitmap, new Rectangle(Point.Empty, settingsBitmap.Size)); settingsBitmap.Save(Path.Combine(folder, "settings-ui.png"));
         dialog.Close();

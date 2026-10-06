@@ -400,4 +400,21 @@ Test("theme choices follow system only when selected and both palettes have read
     foreach(var p in new[]{ThemePalette.Light,ThemePalette.Dark})
     {Equal(true,Contrast(p.Ink,p.Card)>=4.5);Equal(true,Contrast(p.Muted,p.Card)>=4.5);Equal(true,Contrast(p.Muted,p.Page)>=4.5);}
 });
+Test("Windows startup command quotes spaced paths and explicitly uses tray and data directory", () =>
+{
+    Equal("\"C:\\Program Files\\Typing Stats\\TypingStats.exe\" --minimized --data-dir \"C:\\User data\\TypingStats\"",
+        StartupCommand.Build(@"C:\Program Files\Typing Stats\TypingStats.exe", @"C:\User data\TypingStats"));
+});
+Test("Windows argument quoting escapes embedded quotes and trailing backslashes", () =>
+{
+    Equal("\"C:\\\\\"", StartupCommand.Quote(@"C:\"));
+    Equal("\"a\\\"b\"", StartupCommand.Quote("a\"b"));
+    Equal("\"C:\\Typing Stats\"", StartupCommand.Quote(@"C:\Typing Stats"));
+});
+Test("Windows Run command rejects unusable arguments and overlong registrations", () =>
+{
+    foreach(var value in new[]{""," ","a\nb","a\0b"})
+        try{StartupCommand.Quote(value);throw new Exception("Invalid argument accepted");}catch(ArgumentException){}
+    try{StartupCommand.Build("C:\\"+new string('x',260)+".exe",@"C:\data");throw new Exception("Overlong Run command accepted");}catch(ArgumentException){}
+});
 Console.WriteLine($"FINAL passed {passed} tests; exit code {Environment.ExitCode}");

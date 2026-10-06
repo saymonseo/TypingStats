@@ -35,10 +35,13 @@ internal static class Program
             var settings = Settings.Load(data); var store = new StatsStore(Path.Combine(data, "stats.sqlite"));
             Theme.Set(settings.Theme);
             using var collector = new Collector(settings, store);
+            var startupError = smoke ? null : settings.InitializeAutoStart();
             if(args.Contains("--paused"))collector.SetPaused(true).GetAwaiter().GetResult();
             if (args.Contains("--verify")) collector.VerifyPipeline().GetAwaiter().GetResult();
             if (args.Contains("--verify")) UpdateVerification.Run(collector).GetAwaiter().GetResult();
+            if (args.Contains("--verify")) StartupVerification.Run(settings);
             using var host = new TrayHost(collector, args.Contains("--minimized") || settings.StartMinimized, smoke, args.Contains("--benchmark"));
+            if (startupError != null) host.NotifyStartupError(startupError);
             var readyIndex = Array.IndexOf(args, "--update-ready");
             if (readyIndex >= 0 && readyIndex + 1 < args.Length && args[readyIndex + 1].StartsWith("Local\\TypingStatsUpdateReady-", StringComparison.Ordinal))
                 try { using var ready = EventWaitHandle.OpenExisting(args[readyIndex + 1]); ready.Set(); } catch (WaitHandleCannotBeOpenedException) { }
@@ -97,6 +100,7 @@ internal sealed class TrayHost : ApplicationContext
         if (!hotkey.Registered && !smoke) tray.ShowBalloonTip(3000, "TypingStats", "Ctrl+Alt+F12 занят. Пауза доступна в трее.", ToolTipIcon.Info);
     }
     private void Show() { form.Show(); form.WindowState = FormWindowState.Normal; form.Activate(); form.RefreshData(); }
+    public void NotifyStartupError(string error) => tray.ShowBalloonTip(5000, "TypingStats — автозапуск", error, ToolTipIcon.Warning);
     private async Task Safe(Task task)
     { try { await task; } catch (Exception e) { tray.ShowBalloonTip(3000, "TypingStats", e.Message, ToolTipIcon.Warning); } }
     private async void Tick(object? sender, EventArgs e)

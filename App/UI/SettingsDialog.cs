@@ -26,28 +26,29 @@ internal sealed class SettingsDialog : Form
         var originalTheme = settings.Theme;
         appearance.SelectedIndexChanged += (_,_) => Theme.Set((AppTheme)appearance.SelectedIndex);
         FormClosed += (_,_) => { if(DialogResult!=DialogResult.OK)Theme.Set(originalTheme); };
-        var modeLabel = Theme.Label("Режим учёта"); modeLabel.Dock = DockStyle.Fill; panel.Controls.Add(modeLabel, 0, 1);
+        var modeLabel = Theme.Label("Режим учёта"); modeLabel.Dock = DockStyle.Fill; panel.Controls.Add(modeLabel, 0, 2);
         var mode = new ThemedComboBox { DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat, Font = Theme.Font(), Width = Theme.P(168), Anchor = AnchorStyles.Right };
-        mode.Items.AddRange(["Текст", "Все нажатия", "Текст + клавиши"]); mode.SelectedIndex = (int)settings.Mode; panel.Controls.Add(mode, 1, 1);
+        mode.Items.AddRange(["Текст", "Все нажатия", "Текст + клавиши"]); mode.SelectedIndex = (int)settings.Mode; panel.Controls.Add(mode, 1, 2);
         NumericUpDown AddNumber(string text, int value, int min, int max, int row)
         {
             var label = Theme.Label(text); label.Dock = DockStyle.Fill; panel.Controls.Add(label, 0, row);
             var n = new NumericUpDown { Minimum = min, Maximum = max, Value = Math.Clamp(value, min, max), Width = Theme.P(104), Font = Theme.Font(), BorderStyle = BorderStyle.FixedSingle, BackColor = Theme.Page, ForeColor = Theme.Ink, Anchor = AnchorStyles.Right };
             panel.Controls.Add(n, 1, row); return n;
         }
-        var idle = AddNumber("Интервал активности, секунд", settings.IdleSeconds, 1, 30, 4);
-        var gap = AddNumber("Перерыв между сессиями, секунд", settings.SessionSeconds, 30, 600, 5);
-        var retention = AddNumber("Минутная история, дней", settings.MinuteDays, 1, 36500, 6);
-        var goal = AddNumber("Дневная цель (0 — выключена)", settings.DailyGoal, 0, 1000000, 7);
+        var idle = AddNumber("Интервал активности, секунд", settings.IdleSeconds, 1, 30, 5);
+        var gap = AddNumber("Перерыв между сессиями, секунд", settings.SessionSeconds, 30, 600, 6);
+        var retention = AddNumber("Минутная история, дней", settings.MinuteDays, 1, 36500, 7);
+        var goal = AddNumber("Дневная цель (0 — выключена)", settings.DailyGoal, 0, 1000000, 8);
         ToggleSwitch AddToggle(string label, bool value, int row)
         { var toggle = new ToggleSwitch { Text = label, Checked = value, Dock = DockStyle.Fill }; panel.Controls.Add(toggle, 0, row); panel.SetColumnSpan(toggle, 2); return toggle; }
-        var auto = AddToggle("Запускать вместе с Windows", Settings.AutoStartEnabled(), 8);
+        var auto = AddToggle("Запускать приложение при входе в Windows", settings.StartWithWindows, 1);
+        auto.Name = "StartWithWindowsToggle";
         var minimized = AddToggle("Открывать сразу в трее", settings.StartMinimized, 9);
         var composition = AddToggle("Результаты IME через UI Automation", settings.EnableCompositionResults, 10);
         var repeat = AddToggle("Автоповтор считать отдельными нажатиями", settings.CountRepeats, 11);
         var injected = AddToggle("Учитывать программные нажатия клавиатуры", settings.CountInjected, 12);
-        var mouse = AddToggle("Учитывать кнопки мыши во всех режимах", settings.TrackMouse, 2);
-        var mouseInjected = AddToggle("Учитывать программные клики мыши", settings.CountMouseInjected, 3);
+        var mouse = AddToggle("Учитывать кнопки мыши во всех режимах", settings.TrackMouse, 3);
+        var mouseInjected = AddToggle("Учитывать программные клики мыши", settings.CountMouseInjected, 4);
         var automatic = AddToggle("Автоматически скачивать и устанавливать обновления", settings.AutomaticUpdates,14);
         var previews = AddToggle("Получать предварительные версии", settings.IncludePreviewUpdates,15);
         var shortcut = Theme.Label("Пауза: Ctrl + Alt + выбранная клавиша"); shortcut.Dock = DockStyle.Fill; panel.Controls.Add(shortcut, 0, 13);
@@ -61,7 +62,6 @@ internal sealed class SettingsDialog : Form
         {
             try
             {
-                Settings.AutoStart(auto.Checked);
                 settings.IdleSeconds = (int)idle.Value; settings.SessionSeconds = (int)gap.Value;
                 settings.MinuteDays = (int)retention.Value; settings.DailyGoal = (int)goal.Value;
                 settings.StartMinimized = minimized.Checked; settings.EnableCompositionResults = composition.Checked;
@@ -69,7 +69,7 @@ internal sealed class SettingsDialog : Form
                 settings.Mode = (TrackingMode)mode.SelectedIndex; settings.CountRepeats = repeat.Checked; settings.CountInjected = injected.Checked;
                 settings.TrackMouse = mouse.Checked; settings.CountMouseInjected = mouseInjected.Checked;
                 settings.Theme = (AppTheme)appearance.SelectedIndex; settings.AutomaticUpdates = automatic.Checked; settings.IncludePreviewUpdates = previews.Checked;
-                settings.Save(); DialogResult = DialogResult.OK; Close();
+                settings.SetAutoStart(auto.Checked); DialogResult = DialogResult.OK; Close();
             }
             catch (Exception e) { MessageBox.Show(this, "Настройки не сохранены: " + e.Message, "TypingStats"); }
         };
